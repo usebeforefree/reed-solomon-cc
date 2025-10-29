@@ -1,0 +1,13 @@
+.{
+    .name = .reedsol,
+    .version = "0.1.0",
+    .paths = .{
+        "build.zig.zon",
+        "build.zig",
+        "src",
+        "LICENSE",
+    },
+    .fingerprint = 0xabe294ee73ee179a,
+    .minimum_zig_version = "0.15.0",
+    .dependencies = .{},
+}
