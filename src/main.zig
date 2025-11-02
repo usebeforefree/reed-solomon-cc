@@ -24,7 +24,62 @@ pub fn main() !void {
 
     const recovery = try encode(allocator, count, count, &original);
     defer allocator.free(recovery);
+
+    const recovered = try decode(allocator, count, count, &original, recovery);
+    _ = recovered;
 }
+
+fn decode(
+    allocator: std.mem.Allocator,
+    original_count: u64,
+    recovery_count: u64,
+    original: []const []const u8,
+    recovery: []const [64]u8,
+) !void {
+    var decoder: Decoder = try .init(
+        allocator,
+        original_count,
+        recovery_count,
+        original,
+        recovery,
+    );
+    defer decoder.deinit();
+
+    try decoder.decode();
+}
+
+const Decoder = struct {
+    fn init(
+        allocator: std.mem.Allocator,
+        original_count: u64,
+        recovery_count: u64,
+        original: []const []const u8,
+        recovery: []const [64]u8,
+    ) !Decoder {
+        _ = allocator;
+        _ = original_count;
+        _ = recovery_count;
+        _ = original;
+        _ = recovery;
+
+        return Decoder{};
+    }
+
+    fn deinit(d: *Decoder) void {
+        _ = d;
+    }
+
+    fn decode(d: *Decoder) !void {
+        _ = d;
+    }
+
+    fn addOriginalShard(d: *Decoder, index: usize, original_shard: []const u8) !void {
+        const work = &d.work;
+        _ = work;
+        _ = index;
+        _ = original_shard;
+    }
+};
 
 fn encode(
     allocator: std.mem.Allocator,
