@@ -23,20 +23,26 @@ pub fn main() !void {
     }
 
     const recovery = try encode(allocator, count, count, &original);
-    _ = recovery;
+    defer allocator.free(recovery);
 }
 
-fn encode(allocator: std.mem.Allocator, original_count: u64, recovery_count: u64, original: []const []const u8) !void {
+fn encode(
+    allocator: std.mem.Allocator,
+    original_count: u64,
+    recovery_count: u64,
+    original: []const []const u8,
+) ![][64]u8 {
     if (original.len == 0) return error.TooFewOriginalShards;
     const shard_bytes = original[0].len;
 
     var encoder: Encoder = try .init(allocator, original_count, recovery_count, shard_bytes);
-    defer encoder.deinit(allocator);
+    errdefer encoder.deinit(allocator);
 
     for (original) |o| try encoder.addOriginalShard(o);
 
-    const result = try encoder.encode();
-    _ = result;
+    try encoder.encode();
+
+    return encoder.work.shards.data;
 }
 
 const Encoder = struct {
