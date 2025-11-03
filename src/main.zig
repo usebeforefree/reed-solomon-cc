@@ -49,6 +49,8 @@ fn decode(
     );
     defer decoder.deinit(allocator);
 
+    for (original) |o| try decoder.addOriginalShard(o);
+
     try decoder.decode();
 }
 
@@ -118,9 +120,13 @@ const Decoder = struct {
 
     fn addOriginalShard(d: *Decoder, index: usize, original_shard: []const u8) !void {
         const work = &d.work;
-        _ = work;
-        _ = index;
-        _ = original_shard;
+
+        if (work.original_received_count == work.original_count) return error.TooManyOriginalShards;
+        if (original_shard.len != work.shard_bytes) return error.DifferentShardSize;
+        // add case for duplicate
+
+        work.shards.insert(index, original_shard);
+        work.original_received_count += 1;
     }
 };
 
