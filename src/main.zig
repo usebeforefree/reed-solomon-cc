@@ -49,6 +49,19 @@ fn decode(
 }
 
 const Decoder = struct {
+    const Work = struct {
+        original_count: usize,
+        recovery_count: usize,
+
+        shard_bytes: usize,
+
+        original_received_count: u64,
+        recovery_received_count: u64,
+
+        received: []const []const u8,
+        shards: Shards,
+    };
+
     fn init(
         allocator: std.mem.Allocator,
         original_count: u64,
@@ -115,53 +128,6 @@ const Encoder = struct {
 
         fn deinit(w: *Work, allocator: std.mem.Allocator) void {
             w.shards.deinit(allocator);
-        }
-    };
-
-    const Shards = struct {
-        shard_count: u64,
-        /// 64 byte chunks
-        shard_length: u64,
-        /// Slice of `shard_count * shard_length * 64` bytes.
-        data: [][64]u8,
-
-        fn init(allocator: std.mem.Allocator, shard_count: u64, shard_length: u64) !Shards {
-            const data = try allocator.alloc([64]u8, shard_count * shard_length);
-            errdefer allocator.free(data);
-            @memset(data, @splat(0));
-
-            return .{
-                .shard_count = shard_count,
-                .shard_length = shard_length,
-                .data = data,
-            };
-        }
-
-        fn deinit(s: *Shards, allocator: std.mem.Allocator) void {
-            allocator.free(s.data);
-        }
-
-        fn insert(s: *Shards, index: u64, shard: []const u8) void {
-            std.debug.assert(shard.len % 2 == 0);
-
-            const whole_chunk_count = shard.len / 64;
-            const tail_length = shard.len % 64;
-
-            const source_chunks = shard[0 .. shard.len - tail_length];
-
-            const dst = s.data[index * s.shard_length ..][0..s.shard_length];
-            @memcpy(std.mem.sliceAsBytes(dst[0..whole_chunk_count]), source_chunks);
-
-            if (tail_length > 0) {
-                @panic("TODO");
-            }
-        }
-
-        /// Zeroes shards from `start_index..end_index`.
-        fn zero(s: *Shards, start_index: u64, end_index: u64) void {
-            const start = start_index * s.shard_length;
-            const end = end_index * s.shard_length;
-            @memset(std.mem.sliceAsBytes(s.data[start..end]), 0);
         }
     };
 
@@ -322,6 +288,53 @@ const Encoder = struct {
             x_lo ^ prod_lo,
             x_hi ^ prod_hi,
         };
+    }
+};
+
+const Shards = struct {
+    shard_count: u64,
+    /// 64 byte chunks
+    shard_length: u64,
+    /// Slice of `shard_count * shard_length * 64` bytes.
+    data: [][64]u8,
+
+    fn init(allocator: std.mem.Allocator, shard_count: u64, shard_length: u64) !Shards {
+        const data = try allocator.alloc([64]u8, shard_count * shard_length);
+        errdefer allocator.free(data);
+        @memset(data, @splat(0));
+
+        return .{
+            .shard_count = shard_count,
+            .shard_length = shard_length,
+            .data = data,
+        };
+    }
+
+    fn deinit(s: *Shards, allocator: std.mem.Allocator) void {
+        allocator.free(s.data);
+    }
+
+    fn insert(s: *Shards, index: u64, shard: []const u8) void {
+        std.debug.assert(shard.len % 2 == 0);
+
+        const whole_chunk_count = shard.len / 64;
+        const tail_length = shard.len % 64;
+
+        const source_chunks = shard[0 .. shard.len - tail_length];
+
+        const dst = s.data[index * s.shard_length ..][0..s.shard_length];
+        @memcpy(std.mem.sliceAsBytes(dst[0..whole_chunk_count]), source_chunks);
+
+        if (tail_length > 0) {
+            @panic("TODO");
+        }
+    }
+
+    /// Zeroes shards from `start_index..end_index`.
+    fn zero(s: *Shards, start_index: u64, end_index: u64) void {
+        const start = start_index * s.shard_length;
+        const end = end_index * s.shard_length;
+        @memset(std.mem.sliceAsBytes(s.data[start..end]), 0);
     }
 };
 
