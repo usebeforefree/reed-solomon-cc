@@ -49,7 +49,8 @@ fn decode(
 
     // Currently it adds all shards, assumes all are there xD
     for (original, 0..) |o, i| try decoder.addOriginalShard(i, o);
-    _ = recovery;
+
+    for (recovery, 0..) |r, i| try decoder.addRecoveryShard(i, &r);
 }
 
 const Decoder = struct {
@@ -135,6 +136,20 @@ const Decoder = struct {
 
         work.shards.insert(index, original_shard);
         work.original_received_count += 1;
+        work.received[pos] = true;
+    }
+
+    fn addRecoveryShard(d: *Decoder, index: usize, recovery_shard: []const u8) !void {
+        const work = &d.work;
+
+        const pos = work.recovery_base_pos + index;
+
+        if (work.recovery_received_count == work.recovery_count) return error.TooManyRecoveryShards;
+        if (recovery_shard.len != work.shard_bytes) return error.DifferentShardSize;
+        if (work.received[pos]) return error.DuplicateRecoveryShardIndex;
+
+        work.shards.insert(index, recovery_shard);
+        work.recovery_received_count += 1;
         work.received[pos] = true;
     }
 };
