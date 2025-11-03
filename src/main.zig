@@ -36,19 +36,25 @@ fn decode(
     original: []const []const u8,
     recovery: []const [64]u8,
 ) !void {
+    if (original.len == 0) return error.TooFewOriginalShards;
+    const shard_bytes = original[0].len;
+
     var decoder: Decoder = try .init(
         allocator,
         original_count,
         recovery_count,
+        shard_bytes,
         original,
         recovery,
     );
-    defer decoder.deinit();
+    defer decoder.deinit(allocator);
 
     try decoder.decode();
 }
 
 const Decoder = struct {
+    work: Work,
+
     const Work = struct {
         original_count: usize,
         recovery_count: usize,
@@ -60,26 +66,50 @@ const Decoder = struct {
 
         received: []const []const u8,
         shards: Shards,
+
+        fn deinit(w: *Work, allocator: std.mem.Allocator) void {
+            w.shards.deinit(allocator);
+        }
     };
 
     fn init(
         allocator: std.mem.Allocator,
         original_count: u64,
         recovery_count: u64,
-        original: []const []const u8,
+        shard_bytes: usize,
+        received: []const []const u8,
         recovery: []const [64]u8,
     ) !Decoder {
-        _ = allocator;
-        _ = original_count;
-        _ = recovery_count;
-        _ = original;
-        _ = recovery;
+        const high_rate = try useHighRate(original_count, recovery_count);
 
-        return Decoder{};
+        if (high_rate) {
+            if (shard_bytes == 0 or shard_bytes & 1 != 0) return error.InvalidShardSize;
+
+            const chunk_size = try std.math.ceilPowerOfTwo(u64, recovery_count);
+            const work_count = std.mem.alignForward(u64, original_count, chunk_size);
+
+            const work: Work = .{
+                .original_count = original_count,
+                .recovery_count = recovery_count,
+                .shard_bytes = shard_bytes,
+                .original_received_count = received.len,
+                .recovery_received_count = recovery.len,
+                .received = received,
+                .shards = try .init(
+                    allocator,
+                    work_count,
+                    try std.math.divCeil(u64, shard_bytes, 64),
+                ),
+            };
+
+            return .{ .work = work };
+        } else {
+            @panic("TODO");
+        }
     }
 
-    fn deinit(d: *Decoder) void {
-        _ = d;
+    fn deinit(d: *Decoder, allocator: std.mem.Allocator) void {
+        d.work.deinit(allocator);
     }
 
     fn decode(d: *Decoder) !void {
