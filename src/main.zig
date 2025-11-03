@@ -63,6 +63,9 @@ const Decoder = struct {
 
         shard_bytes: usize,
 
+        original_base_pos: usize,
+        recovery_base_pos: usize,
+
         original_received_count: u64,
         recovery_received_count: u64,
 
@@ -94,6 +97,8 @@ const Decoder = struct {
                 .original_count = original_count,
                 .recovery_count = recovery_count,
                 .shard_bytes = shard_bytes,
+                .original_base_pos = chunk_size,
+                .recovery_base_pos = 0,
                 .original_received_count = received.len,
                 .recovery_received_count = recovery.len,
                 .received = received,
