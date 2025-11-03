@@ -44,14 +44,12 @@ fn decode(
         original_count,
         recovery_count,
         shard_bytes,
-        original,
-        recovery,
     );
     defer decoder.deinit(allocator);
 
-    for (original) |o| try decoder.addOriginalShard(o);
-
-    try decoder.decode();
+    // Currently it adds all shards, assumes all are there xD
+    for (original, 0..) |o, i| try decoder.addOriginalShard(i, o);
+    _ = recovery;
 }
 
 const Decoder = struct {
@@ -69,11 +67,12 @@ const Decoder = struct {
         original_received_count: u64,
         recovery_received_count: u64,
 
-        received: []const []const u8,
+        received: []bool,
         shards: Shards,
 
         fn deinit(w: *Work, allocator: std.mem.Allocator) void {
             w.shards.deinit(allocator);
+            allocator.free(w.received);
         }
     };
 
@@ -82,8 +81,6 @@ const Decoder = struct {
         original_count: u64,
         recovery_count: u64,
         shard_bytes: usize,
-        received: []const []const u8,
-        recovery: []const [64]u8,
     ) !Decoder {
         const high_rate = try useHighRate(original_count, recovery_count);
 
@@ -93,14 +90,18 @@ const Decoder = struct {
             const chunk_size = try std.math.ceilPowerOfTwo(u64, recovery_count);
             const work_count = std.mem.alignForward(u64, original_count, chunk_size);
 
+            const received = try allocator.alloc(bool, original_count + recovery_count);
+            errdefer allocator.free(received);
+            @memset(received, false);
+
             const work: Work = .{
                 .original_count = original_count,
                 .recovery_count = recovery_count,
                 .shard_bytes = shard_bytes,
                 .original_base_pos = chunk_size,
                 .recovery_base_pos = 0,
-                .original_received_count = received.len,
-                .recovery_received_count = recovery.len,
+                .original_received_count = 0,
+                .recovery_received_count = 0,
                 .received = received,
                 .shards = try .init(
                     allocator,
@@ -126,12 +127,15 @@ const Decoder = struct {
     fn addOriginalShard(d: *Decoder, index: usize, original_shard: []const u8) !void {
         const work = &d.work;
 
+        const pos = work.original_base_pos + index;
+
         if (work.original_received_count == work.original_count) return error.TooManyOriginalShards;
         if (original_shard.len != work.shard_bytes) return error.DifferentShardSize;
-        // add case for duplicate
+        if (work.received[pos]) return error.DuplicateOriginalShardIndex;
 
         work.shards.insert(index, original_shard);
         work.original_received_count += 1;
+        work.received[pos] = true;
     }
 };
 
