@@ -42,7 +42,7 @@ fn encode(allocator: std.mem.Allocator, original_count: u64, recovery_count: u64
 const Encoder = struct {
     work: Work,
 
-    const V = @Vector(8, u32);
+    const V = @Vector(32, u8);
 
     const Work = struct {
         original_count: u64,
@@ -180,7 +180,7 @@ const Encoder = struct {
                     b[0..32].* = @bitCast(y_lo);
                     b[32..64].* = @bitCast(y_hi);
 
-                    x_lo, x_hi = muladd(x_lo, x_hi, y_lo, y_hi, lut);
+                    x_lo, x_hi = mulAdd256(x_lo, x_hi, y_lo, y_hi, lut);
 
                     a[0..32].* = @bitCast(x_lo);
                     a[32..64].* = @bitCast(x_hi);
@@ -261,12 +261,44 @@ const Encoder = struct {
     }
 
     fn mul256(lo: V, hi: V, lut: tables.Lut) struct { V, V } {
-        _ = lut;
-        _ = lo;
-        _ = hi;
+        var prod_lo: V = undefined;
+        var prod_hi: V = undefined;
 
-        return .{ @splat(0), @splat(0) };
+        const clr_mask: V = @splat(0x0f);
 
+        const data_0 = lo & clr_mask;
+        prod_lo = shuffle256epi8(broadcastU128(lut[0][0]), data_0);
+        prod_hi = shuffle256epi8(broadcastU128(lut[1][0]), data_0);
+
+        const data_1 = (lo >> @splat(4)) & clr_mask;
+        prod_lo ^= shuffle256epi8(broadcastU128(lut[0][1]), data_1);
+        prod_hi ^= shuffle256epi8(broadcastU128(lut[1][1]), data_1);
+
+        const data_2 = hi & clr_mask;
+        prod_lo ^= shuffle256epi8(broadcastU128(lut[0][2]), data_2);
+        prod_hi ^= shuffle256epi8(broadcastU128(lut[1][2]), data_2);
+
+        const data_3 = (hi >> @splat(4)) & clr_mask;
+        prod_lo ^= shuffle256epi8(broadcastU128(lut[0][3]), data_3);
+        prod_hi ^= shuffle256epi8(broadcastU128(lut[1][3]), data_3);
+
+        return .{ prod_lo, prod_hi };
+    }
+
+    // TODO optimize
+    fn broadcastU128(x: u128) V {
+        const lo: [16]u8 = @bitCast(x);
+        var res: V = undefined;
+
+        for (0..16) |i| {
+            res[i] = lo[i];
+            res[i + 16] = lo[i];
+        }
+
+        return res;
+    }
+
+    // TODO optimize
     fn shuffle256epi8(a: V, b: V) V {
         var res: V = @splat(0);
 
@@ -281,8 +313,8 @@ const Encoder = struct {
         return res;
     }
 
-    fn muladd(x_lo: V, x_hi: V, y_lo: V, y_hi: V, lut: tables.Lut) struct { V, V } {
-        const prod_lo, const prod_hi = mul256(y_lo, y_hi, lut);
+    fn mulAdd256(x_lo: V, x_hi: V, y_lo: V, y_hi: V, lut: tables.Lut) struct { V, V } {
+        const prod_lo, const prod_hi = mul256(@bitCast(y_lo), @bitCast(y_hi), lut);
         return .{
             x_lo ^ prod_lo,
             x_hi ^ prod_hi,
