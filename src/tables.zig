@@ -89,7 +89,9 @@ pub fn main() !void {
     try stdout.writeAll(
         \\};
         \\
-        \\pub const mul128: [65536][2][4]u128 = .{
+        \\pub const Lut = [2][4]u128;
+        \\
+        \\pub const mul128: [65536]Lut = .{
     );
 
     var mul128: [gf.order][2][4]u128 = @splat(@splat(@splat(0)));

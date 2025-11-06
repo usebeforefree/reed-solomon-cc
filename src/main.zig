@@ -248,9 +248,7 @@ const Encoder = struct {
         }
     }
 
-    const Lut = [2][4]u128;
-
-    fn mul256(lo: V, hi: V, lut: Lut) struct { V, V } {
+    fn mul256(lo: V, hi: V, lut: tables.Lut) struct { V, V } {
         _ = lut;
         _ = lo;
         _ = hi;
@@ -258,7 +256,7 @@ const Encoder = struct {
         return .{ @splat(0), @splat(0) };
     }
 
-    fn muladd(x_lo: V, x_hi: V, y_lo: V, y_hi: V, lut: Lut) struct { V, V } {
+    fn muladd(x_lo: V, x_hi: V, y_lo: V, y_hi: V, lut: tables.Lut) struct { V, V } {
         const prod_lo, const prod_hi = mul256(y_lo, y_hi, lut);
         return .{
             x_lo ^ prod_lo,
