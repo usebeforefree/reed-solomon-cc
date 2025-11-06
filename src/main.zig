@@ -239,6 +239,21 @@ const Encoder = struct {
             distance = distance_4;
             distance_4 <<= 2;
         }
+
+        // FINAL ODD LAYER
+
+        if (distance < size) {
+            const log_m = tables.skew[distance + skew_delta - 1];
+
+            const s0 = shards.data[0 .. (pos + distance) * shards.shard_length][0..shards.shard_length];
+            const s1 = shards.data[(pos + distance) * shards.shard_length ..][0..shards.shard_length];
+
+            if (log_m == gf.modulus) {
+                xor(s0, s1);
+            } else {
+                S.partial(s0, s1, log_m);
+            }
+        }
     }
 
     fn xor(a: [][64]u8, b: [][64]u8) void {
