@@ -31,4 +31,17 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "");
     run_step.dependOn(&b.addRunArtifact(exe).step);
+
+    const main_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tables", .module = tables_mod },
+            },
+        }),
+    });
+    const run_tests = b.addRunArtifact(main_tests);
+    b.step("test", "Run main tests").dependOn(&run_tests.step);
 }
