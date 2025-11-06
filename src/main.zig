@@ -266,6 +266,19 @@ const Encoder = struct {
         _ = hi;
 
         return .{ @splat(0), @splat(0) };
+
+    fn shuffle256epi8(a: V, b: V) V {
+        var res: V = @splat(0);
+
+        for (0..16) |i| {
+            if ((b[i] & 0x80) == 0)
+                res[i] = a[b[i] % 16];
+
+            if ((b[i + 16] & 0x80) == 0)
+                res[i + 16] = a[b[i + 16] % 16 + 16];
+        }
+
+        return res;
     }
 
     fn muladd(x_lo: V, x_hi: V, y_lo: V, y_hi: V, lut: tables.Lut) struct { V, V } {
