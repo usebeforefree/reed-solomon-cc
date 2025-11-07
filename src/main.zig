@@ -55,6 +55,18 @@ const Encoder = struct {
         fn deinit(w: *Work, allocator: std.mem.Allocator) void {
             w.shards.deinit(allocator);
         }
+
+        fn undoLastChunkEncoding(w: *Work) void {
+            const whole_chunk_count = w.shard_bytes / 64;
+            const tail_len = w.shard_bytes % 64;
+
+            if (tail_len == 0) return;
+
+            for (0..w.recovery_count) |i| {
+                var last_chunk = w.shards.data[i * w.shards.shard_length ..][0..w.shards.shard_length][whole_chunk_count];
+                std.mem.copyForwards(u8, last_chunk[tail_len / 2 ..], last_chunk[32 .. 32 + tail_len / 2]);
+            }
+        }
     };
 
     const Shards = struct {
@@ -160,6 +172,8 @@ const Encoder = struct {
         const first_count = @min(work.original_count, chunk_size);
         work.shards.zero(first_count, chunk_size);
         e.ifft(0, chunk_size, first_count, chunk_size);
+
+        work.undoLastChunkEncoding();
     }
 
     fn fft(e: *Encoder, pos: u64, size: u64, truncated_size: u64, skew_delta: u64) void {
