@@ -2,29 +2,7 @@ const std = @import("std");
 const tables = @import("tables");
 const gf = @import("gf.zig");
 
-const SHARD_BYTES = 1024;
-
-pub fn main() !void {
-    const count = 256;
-
-    var gpa = std.heap.DebugAllocator(.{}){};
-    const allocator = gpa.allocator();
-    defer _ = gpa.deinit();
-
-    var prng = std.Random.DefaultPrng.init(0);
-    const random = prng.random();
-
-    var original: [count][]const u8 = undefined;
-    defer for (original) |o| allocator.free(o);
-    for (&original) |*a| {
-        const slice = try allocator.alloc(u8, SHARD_BYTES);
-        random.bytes(slice);
-        a.* = slice;
-    }
-
-    const recovery = try encode(allocator, count, count, &original);
-    defer allocator.free(recovery);
-}
+pub fn main() void {}
 
 fn encode(allocator: std.mem.Allocator, original_count: u64, recovery_count: u64, original: []const []const u8) ![]const [64]u8 {
     if (original.len == 0) return error.TooFewOriginalShards;
@@ -479,12 +457,13 @@ fn useHighRate(original: u64, recovery: u64) !bool {
 
 test "Encoder.encode" {
     const count = 8;
+    const SHARD_BYTES = 128;
 
-    var input: [1024]u8 = undefined;
+    var input: [SHARD_BYTES * count]u8 = undefined;
 
-    for (0..256) |i| {
+    for (0..SHARD_BYTES * 2) |i| {
         for (0..4) |j| {
-            input[i + j * 256] = @intCast(i);
+            input[i + j * SHARD_BYTES * 2] = @intCast(i);
         }
     }
 
