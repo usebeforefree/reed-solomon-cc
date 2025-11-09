@@ -16,32 +16,20 @@ pub fn build(b: *std.Build) void {
     const tables_mod = b.createModule(.{ .root_source_file = run_tables.captureStdOut() });
     run_tables.captured_stdout.?.basename = "output.zig"; // work around before zig 0.16
 
-    const exe = b.addExecutable(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "tables", .module = tables_mod },
-            },
-        }),
-        .name = "example",
+    const mod = b.addModule("reedsol", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "tables", .module = tables_mod },
+        },
     });
-    b.installArtifact(exe);
-
-    const run_step = b.step("run", "");
-    run_step.dependOn(&b.addRunArtifact(exe).step);
-
-    const main_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "tables", .module = tables_mod },
-            },
-        }),
+    const mod_tests = b.addTest(.{
+        .root_module = mod,
     });
-    const run_tests = b.addRunArtifact(main_tests);
-    b.step("test", "Run main tests").dependOn(&run_tests.step);
+
+    const run_mod_tests = b.addRunArtifact(mod_tests);
+
+    const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&run_mod_tests.step);
 }

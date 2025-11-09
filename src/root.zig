@@ -459,8 +459,8 @@ const Decoder = struct {
         work.received[pos] = true;
     }
 
-    fn decode(e: *Decoder) ![]const [64]u8 {
-        const work = &e.work;
+    fn decode(d: *Decoder) ![]const [64]u8 {
+        const work = &d.work;
         if (work.original_received_count != work.original_count) return error.TooFewOriginalShards;
 
         const chunk_size = try std.math.ceilPowerOfTwo(u64, work.recovery_count);
@@ -478,7 +478,15 @@ const Decoder = struct {
                 work.erasures[i] = 1;
         }
 
+        d.evalPoly(original_end);
+
         return work.shards.data;
+    }
+
+    fn evalPoly(d: *Decoder, truncated_size: u64) void {
+        const work = &d.work;
+        _ = work;
+        _ = truncated_size;
     }
 };
 
