@@ -46,53 +46,6 @@ const Encoder = struct {
         }
     };
 
-    const Shards = struct {
-        shard_count: u64,
-        /// 64 byte chunks
-        shard_length: u64,
-        /// Slice of `shard_count * shard_length * 64` bytes.
-        data: [][64]u8,
-
-        fn init(allocator: std.mem.Allocator, shard_count: u64, shard_length: u64) !Shards {
-            const data = try allocator.alloc([64]u8, shard_count * shard_length);
-            errdefer allocator.free(data);
-            @memset(data, @splat(0));
-
-            return .{
-                .shard_count = shard_count,
-                .shard_length = shard_length,
-                .data = data,
-            };
-        }
-
-        fn deinit(s: *Shards, allocator: std.mem.Allocator) void {
-            allocator.free(s.data);
-        }
-
-        fn insert(s: *Shards, index: u64, shard: []const u8) void {
-            std.debug.assert(shard.len % 2 == 0);
-
-            const whole_chunk_count = shard.len / 64;
-            const tail_length = shard.len % 64;
-
-            const source_chunks = shard[0 .. shard.len - tail_length];
-
-            const dst = s.data[index * s.shard_length ..][0..s.shard_length];
-            @memcpy(std.mem.sliceAsBytes(dst[0..whole_chunk_count]), source_chunks);
-
-            if (tail_length > 0) {
-                @panic("TODO");
-            }
-        }
-
-        /// Zeroes shards from `start_index..end_index`.
-        fn zero(s: *Shards, start_index: u64, end_index: u64) void {
-            const start = start_index * s.shard_length;
-            const end = end_index * s.shard_length;
-            @memset(std.mem.sliceAsBytes(s.data[start..end]), 0);
-        }
-    };
-
     fn init(
         allocator: std.mem.Allocator,
         original_count: u64,
@@ -435,6 +388,262 @@ const Encoder = struct {
     }
 };
 
+fn decode(
+    allocator: std.mem.Allocator,
+    original_count: u64,
+    recovery_count: u64,
+    original: []const ?[]const u8,
+    recovery: []const ?[64]u8,
+) ![]const [64]u8 {
+    if (original.len == 0) return error.TooFewOriginalShards;
+
+    const shard_bytes = blk: {
+        for (recovery) |rec| {
+            if (rec) |r| {
+                break :blk r.len;
+            }
+        }
+
+        // no recovery shards
+        var original_received_count: u64 = 0;
+        for (original) |ori| {
+            if (ori != null) original_received_count += 1;
+        }
+
+        // original data is complete
+        if (original_received_count == original_count) {
+            const chunk_size = try std.math.ceilPowerOfTwo(u64, recovery_count);
+            const work_count = std.mem.alignForward(u64, original_count, chunk_size);
+
+            var shards: Shards = try .init(
+                allocator,
+                work_count,
+                try std.math.divCeil(u64, original[0].?.len, 64),
+            );
+
+            for (0..original_count) |i| {
+                shards.insert(i, original[i].?);
+            }
+
+            return shards.data;
+        } else return error.NotEnoughShards;
+    };
+
+    var decoder: Decoder = try .init(allocator, original_count, recovery_count, shard_bytes, recovery);
+    // Does this smell?
+    defer decoder.deinit(allocator);
+    errdefer decoder.err_deinit(allocator);
+
+    for (0..original_count) |i| {
+        if (original[i]) |o| {
+            try decoder.addOriginalShard(i, o);
+        }
+    }
+
+    for (0..recovery_count) |i| {
+        if (recovery[i]) |r| {
+            try decoder.addRecoveryShard(i, &r);
+        }
+    }
+
+    return try decoder.decode();
+}
+
+const Decoder = struct {
+    work: Work,
+
+    const Work = struct {
+        original_count: u64,
+        recovery_count: u64,
+        shard_bytes: usize,
+
+        original_base_pos: u64 = 0,
+        recovery_base_pos: u64,
+
+        original_received_count: u64 = 0,
+        recovery_received_count: u64 = 0,
+
+        erasures: [gf.order]u16 = @splat(0),
+
+        received: []bool,
+        shards: Shards,
+
+        fn err_deinit(w: *Work, allocator: std.mem.Allocator) void {
+            w.shards.deinit(allocator);
+        }
+
+        fn deinit(w: *Work, allocator: std.mem.Allocator) void {
+            allocator.free(w.received);
+        }
+
+        fn undoLastChunkEncoding(w: *Work) void {
+            const whole_chunk_count = w.shard_bytes / 64;
+            const tail_len = w.shard_bytes % 64;
+
+            if (tail_len == 0) return;
+
+            for (0..w.recovery_count) |i| {
+                var last_chunk = w.shards.data[i * w.shards.shard_length ..][0..w.shards.shard_length][whole_chunk_count];
+                std.mem.copyForwards(u8, last_chunk[tail_len / 2 ..], last_chunk[32 .. 32 + tail_len / 2]);
+            }
+        }
+    };
+
+    fn init(
+        allocator: std.mem.Allocator,
+        original_count: u64,
+        recovery_count: u64,
+        shard_bytes: usize,
+        recovery: []const ?[64]u8,
+    ) !Decoder {
+        _ = recovery;
+        const high_rate = try useHighRate(original_count, recovery_count);
+
+        if (high_rate) {
+            if (shard_bytes == 0 or shard_bytes & 1 != 0) return error.InvalidShardSize;
+
+            const chunk_size = try std.math.ceilPowerOfTwo(u64, recovery_count);
+            const work_count = std.mem.alignForward(u64, original_count + recovery_count, chunk_size);
+
+            var shards: Shards = try .init(
+                allocator,
+                work_count,
+                try std.math.divCeil(u64, shard_bytes, 64),
+            );
+            errdefer shards.deinit(allocator);
+
+            const received = try allocator.alloc(bool, original_count + recovery_count);
+            errdefer allocator.free(received);
+            @memset(received, false);
+
+            const work: Work = .{
+                .original_count = original_count,
+                .recovery_count = recovery_count,
+                .shard_bytes = shard_bytes,
+                .recovery_base_pos = chunk_size,
+                .received = received,
+                .shards = shards,
+            };
+
+            return .{ .work = work };
+        } else {
+            @panic("TODO");
+        }
+    }
+
+    fn err_deinit(d: *Decoder, allocator: std.mem.Allocator) void {
+        d.work.err_deinit(allocator);
+    }
+
+    fn deinit(d: *Decoder, allocator: std.mem.Allocator) void {
+        d.work.deinit(allocator);
+    }
+
+    fn addOriginalShard(d: *Decoder, index: u64, original_shard: []const u8) !void {
+        const work = &d.work;
+
+        const pos = work.original_base_pos + index;
+
+        if (index >= work.original_count) {
+            return error.InvalidShardIndex;
+        } else if (work.received[pos]) return error.DuplicateShardIndex;
+        if (work.original_received_count == work.original_count) return error.TooManyShards;
+        if (original_shard.len != work.shard_bytes) return error.DifferentShardSize;
+
+        work.shards.insert(pos, original_shard);
+        work.original_received_count += 1;
+        work.received[pos] = true;
+    }
+
+    fn addRecoveryShard(d: *Decoder, index: u64, recovery_shard: []const u8) !void {
+        const work = &d.work;
+
+        const pos = work.recovery_base_pos + index;
+
+        if (index >= work.recovery_count) {
+            return error.InvalidShardIndex;
+        } else if (work.received[pos]) {
+            return error.DuplicateShardIndex;
+        } else if (work.recovery_received_count == work.recovery_count) {
+            return error.TooManyShards;
+        } else if (recovery_shard.len != work.shard_bytes)
+            return error.DifferentShardSize;
+
+        work.shards.insert(pos, recovery_shard);
+        work.recovery_received_count += 1;
+        work.received[pos] = true;
+    }
+
+    fn decode(e: *Decoder) ![]const [64]u8 {
+        const work = &e.work;
+        if (work.original_received_count != work.original_count) return error.TooFewOriginalShards;
+
+        const chunk_size = try std.math.ceilPowerOfTwo(u64, work.recovery_count);
+        const original_end = chunk_size + work.original_count;
+
+        for (0..work.recovery_count) |i| {
+            if (!work.received[i])
+                work.erasures[i] = 1;
+        }
+
+        @memset(work.erasures[work.recovery_count..chunk_size], 0);
+
+        for (chunk_size..original_end) |i| {
+            if (!work.received[i])
+                work.erasures[i] = 1;
+        }
+
+        return work.shards.data;
+    }
+};
+
+const Shards = struct {
+    shard_count: u64,
+    /// 64 byte chunks
+    shard_length: u64,
+    /// Slice of `shard_count * shard_length * 64` bytes.
+    data: [][64]u8,
+
+    fn init(allocator: std.mem.Allocator, shard_count: u64, shard_length: u64) !Shards {
+        const data = try allocator.alloc([64]u8, shard_count * shard_length);
+        errdefer allocator.free(data);
+        @memset(data, @splat(0));
+
+        return .{
+            .shard_count = shard_count,
+            .shard_length = shard_length,
+            .data = data,
+        };
+    }
+
+    fn deinit(s: *Shards, allocator: std.mem.Allocator) void {
+        allocator.free(s.data);
+    }
+
+    fn insert(s: *Shards, index: u64, shard: []const u8) void {
+        std.debug.assert(shard.len % 2 == 0);
+
+        const whole_chunk_count = shard.len / 64;
+        const tail_length = shard.len % 64;
+
+        const source_chunks = shard[0 .. shard.len - tail_length];
+
+        const dst = s.data[index * s.shard_length ..][0..s.shard_length];
+        @memcpy(std.mem.sliceAsBytes(dst[0..whole_chunk_count]), source_chunks);
+
+        if (tail_length > 0) {
+            @panic("TODO");
+        }
+    }
+
+    /// Zeroes shards from `start_index..end_index`.
+    fn zero(s: *Shards, start_index: u64, end_index: u64) void {
+        const start = start_index * s.shard_length;
+        const end = end_index * s.shard_length;
+        @memset(std.mem.sliceAsBytes(s.data[start..end]), 0);
+    }
+};
+
 fn useHighRate(original: u64, recovery: u64) !bool {
     if (original > gf.order or recovery > gf.order) return error.UnsupportedShardCount;
 
@@ -455,7 +664,7 @@ fn useHighRate(original: u64, recovery: u64) !bool {
     };
 }
 
-test "Encoder.encode" {
+test "encode" {
     const count = 16;
     const SHARD_BYTES = 64;
 
@@ -478,6 +687,27 @@ test "Encoder.encode" {
     for (expected, recovery) |e, r| {
         try std.testing.expectEqual(e, r);
     }
+}
+
+test "decode" {
+    const count = 16;
+    const SHARD_BYTES = 64;
+
+    var input: [SHARD_BYTES * count]u8 = undefined;
+    for (0..input.len) |i| input[i] = @intCast(i % 256);
+
+    var original: [count]?[]u8 = undefined;
+
+    for (&original, 0..) |*shard, i| {
+        const start = i * SHARD_BYTES;
+        const end = start + SHARD_BYTES;
+        shard.* = input[start..end];
+    }
+
+    const recovery: [16]?[64]u8 = .{ .{ 134, 135, 132, 133, 130, 131, 128, 129, 142, 143, 140, 141, 138, 139, 136, 137, 150, 151, 148, 149, 146, 147, 144, 145, 158, 159, 156, 157, 154, 155, 152, 153, 2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13, 18, 19, 16, 17, 22, 23, 20, 21, 26, 27, 24, 25, 30, 31, 28, 29 }, .{ 198, 199, 196, 197, 194, 195, 192, 193, 206, 207, 204, 205, 202, 203, 200, 201, 214, 215, 212, 213, 210, 211, 208, 209, 222, 223, 220, 221, 218, 219, 216, 217, 66, 67, 64, 65, 70, 71, 68, 69, 74, 75, 72, 73, 78, 79, 76, 77, 82, 83, 80, 81, 86, 87, 84, 85, 90, 91, 88, 89, 94, 95, 92, 93 }, .{ 6, 7, 4, 5, 2, 3, 0, 1, 14, 15, 12, 13, 10, 11, 8, 9, 22, 23, 20, 21, 18, 19, 16, 17, 30, 31, 28, 29, 26, 27, 24, 25, 130, 131, 128, 129, 134, 135, 132, 133, 138, 139, 136, 137, 142, 143, 140, 141, 146, 147, 144, 145, 150, 151, 148, 149, 154, 155, 152, 153, 158, 159, 156, 157 }, .{ 70, 71, 68, 69, 66, 67, 64, 65, 78, 79, 76, 77, 74, 75, 72, 73, 86, 87, 84, 85, 82, 83, 80, 81, 94, 95, 92, 93, 90, 91, 88, 89, 194, 195, 192, 193, 198, 199, 196, 197, 202, 203, 200, 201, 206, 207, 204, 205, 210, 211, 208, 209, 214, 215, 212, 213, 218, 219, 216, 217, 222, 223, 220, 221 }, .{ 134, 135, 132, 133, 130, 131, 128, 129, 142, 143, 140, 141, 138, 139, 136, 137, 150, 151, 148, 149, 146, 147, 144, 145, 158, 159, 156, 157, 154, 155, 152, 153, 2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13, 18, 19, 16, 17, 22, 23, 20, 21, 26, 27, 24, 25, 30, 31, 28, 29 }, .{ 198, 199, 196, 197, 194, 195, 192, 193, 206, 207, 204, 205, 202, 203, 200, 201, 214, 215, 212, 213, 210, 211, 208, 209, 222, 223, 220, 221, 218, 219, 216, 217, 66, 67, 64, 65, 70, 71, 68, 69, 74, 75, 72, 73, 78, 79, 76, 77, 82, 83, 80, 81, 86, 87, 84, 85, 90, 91, 88, 89, 94, 95, 92, 93 }, .{ 6, 7, 4, 5, 2, 3, 0, 1, 14, 15, 12, 13, 10, 11, 8, 9, 22, 23, 20, 21, 18, 19, 16, 17, 30, 31, 28, 29, 26, 27, 24, 25, 130, 131, 128, 129, 134, 135, 132, 133, 138, 139, 136, 137, 142, 143, 140, 141, 146, 147, 144, 145, 150, 151, 148, 149, 154, 155, 152, 153, 158, 159, 156, 157 }, .{ 70, 71, 68, 69, 66, 67, 64, 65, 78, 79, 76, 77, 74, 75, 72, 73, 86, 87, 84, 85, 82, 83, 80, 81, 94, 95, 92, 93, 90, 91, 88, 89, 194, 195, 192, 193, 198, 199, 196, 197, 202, 203, 200, 201, 206, 207, 204, 205, 210, 211, 208, 209, 214, 215, 212, 213, 218, 219, 216, 217, 222, 223, 220, 221 }, .{ 134, 135, 132, 133, 130, 131, 128, 129, 142, 143, 140, 141, 138, 139, 136, 137, 150, 151, 148, 149, 146, 147, 144, 145, 158, 159, 156, 157, 154, 155, 152, 153, 2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13, 18, 19, 16, 17, 22, 23, 20, 21, 26, 27, 24, 25, 30, 31, 28, 29 }, .{ 198, 199, 196, 197, 194, 195, 192, 193, 206, 207, 204, 205, 202, 203, 200, 201, 214, 215, 212, 213, 210, 211, 208, 209, 222, 223, 220, 221, 218, 219, 216, 217, 66, 67, 64, 65, 70, 71, 68, 69, 74, 75, 72, 73, 78, 79, 76, 77, 82, 83, 80, 81, 86, 87, 84, 85, 90, 91, 88, 89, 94, 95, 92, 93 }, .{ 6, 7, 4, 5, 2, 3, 0, 1, 14, 15, 12, 13, 10, 11, 8, 9, 22, 23, 20, 21, 18, 19, 16, 17, 30, 31, 28, 29, 26, 27, 24, 25, 130, 131, 128, 129, 134, 135, 132, 133, 138, 139, 136, 137, 142, 143, 140, 141, 146, 147, 144, 145, 150, 151, 148, 149, 154, 155, 152, 153, 158, 159, 156, 157 }, .{ 70, 71, 68, 69, 66, 67, 64, 65, 78, 79, 76, 77, 74, 75, 72, 73, 86, 87, 84, 85, 82, 83, 80, 81, 94, 95, 92, 93, 90, 91, 88, 89, 194, 195, 192, 193, 198, 199, 196, 197, 202, 203, 200, 201, 206, 207, 204, 205, 210, 211, 208, 209, 214, 215, 212, 213, 218, 219, 216, 217, 222, 223, 220, 221 }, .{ 134, 135, 132, 133, 130, 131, 128, 129, 142, 143, 140, 141, 138, 139, 136, 137, 150, 151, 148, 149, 146, 147, 144, 145, 158, 159, 156, 157, 154, 155, 152, 153, 2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13, 18, 19, 16, 17, 22, 23, 20, 21, 26, 27, 24, 25, 30, 31, 28, 29 }, .{ 198, 199, 196, 197, 194, 195, 192, 193, 206, 207, 204, 205, 202, 203, 200, 201, 214, 215, 212, 213, 210, 211, 208, 209, 222, 223, 220, 221, 218, 219, 216, 217, 66, 67, 64, 65, 70, 71, 68, 69, 74, 75, 72, 73, 78, 79, 76, 77, 82, 83, 80, 81, 86, 87, 84, 85, 90, 91, 88, 89, 94, 95, 92, 93 }, .{ 6, 7, 4, 5, 2, 3, 0, 1, 14, 15, 12, 13, 10, 11, 8, 9, 22, 23, 20, 21, 18, 19, 16, 17, 30, 31, 28, 29, 26, 27, 24, 25, 130, 131, 128, 129, 134, 135, 132, 133, 138, 139, 136, 137, 142, 143, 140, 141, 146, 147, 144, 145, 150, 151, 148, 149, 154, 155, 152, 153, 158, 159, 156, 157 }, .{ 70, 71, 68, 69, 66, 67, 64, 65, 78, 79, 76, 77, 74, 75, 72, 73, 86, 87, 84, 85, 82, 83, 80, 81, 94, 95, 92, 93, 90, 91, 88, 89, 194, 195, 192, 193, 198, 199, 196, 197, 202, 203, 200, 201, 206, 207, 204, 205, 210, 211, 208, 209, 214, 215, 212, 213, 218, 219, 216, 217, 222, 223, 220, 221 } };
+
+    const res = try decode(std.testing.allocator, count, count, &original, &recovery);
+    std.testing.allocator.free(res);
 }
 
 test "Encoder.ifftPartial" {
