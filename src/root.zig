@@ -492,7 +492,7 @@ const Decoder = struct {
 
 const Engine = struct {
     fn fftPartial(x: [][64]u8, y: [][64]u8, log_m: u16) void {
-        const lut = tables.mul128[log_m];
+        const lut = tables.mul_128[log_m];
 
         for (x, y) |*a, *b| {
             var x_lo: V = @bitCast(a[0..32].*);
@@ -515,7 +515,7 @@ const Engine = struct {
     }
 
     fn ifftPartial(x: [][64]u8, y: [][64]u8, log_m: u16) void {
-        const lut = tables.mul128[log_m];
+        const lut = tables.mul_128[log_m];
 
         for (x, y) |*a, *b| {
             var x_lo: V = @bitCast(a[0..32].*);
@@ -770,7 +770,7 @@ fn mulAdd256Test(
         @bitCast(x_hi),
         @bitCast(y_lo),
         @bitCast(y_hi),
-        tables.mul128[table_index],
+        tables.mul_128[table_index],
     );
 
     const expected_prod_lo: V = @bitCast(expected_lo);
@@ -800,7 +800,7 @@ fn mul256Test(
     const prod_lo, const prod_hi = Engine.mul256(
         @bitCast(y_lo),
         @bitCast(y_hi),
-        tables.mul128[table_index],
+        tables.mul_128[table_index],
     );
 
     const expected_prod_lo: V = @bitCast(expected_lo);

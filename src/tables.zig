@@ -92,10 +92,10 @@ pub fn main() !void {
         \\
         \\pub const Lut = [2][4]u128;
         \\
-        \\pub const mul128: [65536]Lut = .{
+        \\pub const mul_128: [65536]Lut = .{
     );
 
-    var mul128: [gf.order][2][4]u128 = @splat(@splat(@splat(0)));
+    var mul_128: [gf.order][2][4]u128 = @splat(@splat(@splat(0)));
 
     for (0..gf.order) |log_m| {
         for (0..4) |i| {
@@ -106,12 +106,12 @@ pub fn main() !void {
                 prod_lo[j] = @truncate(prod);
                 prod_hi[j] = @truncate(prod >> 8);
             }
-            mul128[log_m][0][i] = std.mem.readInt(u128, &prod_lo, .little);
-            mul128[log_m][1][i] = std.mem.readInt(u128, &prod_hi, .little);
+            mul_128[log_m][0][i] = std.mem.readInt(u128, &prod_lo, .little);
+            mul_128[log_m][1][i] = std.mem.readInt(u128, &prod_hi, .little);
         }
     }
 
-    for (mul128) |lut| {
+    for (mul_128) |lut| {
         try stdout.writeAll(
             \\ .{
         );
