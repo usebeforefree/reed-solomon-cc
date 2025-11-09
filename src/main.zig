@@ -26,7 +26,7 @@ const Encoder = struct {
         recovery_count: u64,
         shard_bytes: usize,
 
-        original_received_count: u64,
+        original_received_count: u64 = 0,
         shards: Shards,
 
         fn deinit(w: *Work, allocator: std.mem.Allocator) void {
@@ -64,7 +64,6 @@ const Encoder = struct {
                 .original_count = original_count,
                 .recovery_count = recovery_count,
                 .shard_bytes = shard_bytes,
-                .original_received_count = 0,
                 .shards = try .init(
                     allocator,
                     work_count,
@@ -343,8 +342,8 @@ const Decoder = struct {
         recovery_count: u64,
         shard_bytes: usize,
 
-        original_base_pos: u64 = 0,
-        recovery_base_pos: u64,
+        original_base_pos: u64,
+        recovery_base_pos: u64 = 0,
 
         original_received_count: u64 = 0,
         recovery_received_count: u64 = 0,
@@ -389,7 +388,7 @@ const Decoder = struct {
             if (shard_bytes == 0 or shard_bytes & 1 != 0) return error.InvalidShardSize;
 
             const chunk_size = try std.math.ceilPowerOfTwo(u64, recovery_count);
-            const work_count = std.mem.alignForward(u64, original_count + recovery_count, chunk_size);
+            const work_count = try std.math.ceilPowerOfTwo(u64, chunk_size + original_count);
 
             var shards: Shards = try .init(
                 allocator,
@@ -406,7 +405,7 @@ const Decoder = struct {
                 .original_count = original_count,
                 .recovery_count = recovery_count,
                 .shard_bytes = shard_bytes,
-                .recovery_base_pos = chunk_size,
+                .original_base_pos = chunk_size,
                 .received = received,
                 .shards = shards,
             };
