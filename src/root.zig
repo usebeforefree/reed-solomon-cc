@@ -259,8 +259,8 @@ const Encoder = struct {
             const log_m = tables.skew[distance + skew_delta - 1];
 
             if (log_m == gf.modulus) {
-                const s0 = shards.data[(pos + distance) * shards.shard_length ..][0..shards.shard_length];
-                const s1 = shards.data[pos * shards.shard_length ..][0..shards.shard_length];
+                const s0 = shards.data[(pos + distance) * shards.shard_length ..][0..distance];
+                const s1 = shards.data[pos * shards.shard_length ..][0..distance];
                 Engine.xor(s0, s1);
             } else {
                 for (0..distance) |i| {
@@ -280,7 +280,7 @@ fn decode(
     recovery_count: u64,
     original: []const ?[]const u8,
     recovery: []const ?[64]u8,
-) ![]const [64]u8 {
+) !struct { []const [64]u8, usize } {
     if (original.len == 0) return error.TooFewOriginalShards;
 
     const shard_bytes = blk: {
@@ -311,11 +311,11 @@ fn decode(
                 shards.insert(i, original[i].?);
             }
 
-            return shards.data;
+            return .{ shards.data, 0 };
         } else return error.NotEnoughShards;
     };
 
-    var decoder: Decoder = try .init(allocator, original_count, recovery_count, shard_bytes, recovery);
+    var decoder: Decoder = try .init(allocator, original_count, recovery_count, shard_bytes);
     // Does this smell?
     defer decoder.deinit(allocator);
     errdefer decoder.err_deinit(allocator);
@@ -332,7 +332,7 @@ fn decode(
         }
     }
 
-    return try decoder.decode();
+    return .{ try decoder.decode(), decoder.work.original_base_pos };
 }
 
 const Decoder = struct {
@@ -381,9 +381,7 @@ const Decoder = struct {
         original_count: u64,
         recovery_count: u64,
         shard_bytes: usize,
-        recovery: []const ?[64]u8,
     ) !Decoder {
-        _ = recovery;
         const high_rate = try useHighRate(original_count, recovery_count);
 
         if (high_rate) {
@@ -463,7 +461,6 @@ const Decoder = struct {
 
     fn decode(d: *Decoder) ![]const [64]u8 {
         const work = &d.work;
-        if (work.original_received_count != work.original_count) return error.TooFewOriginalShards;
 
         const chunk_size = try std.math.ceilPowerOfTwo(u64, work.recovery_count);
         const original_end = chunk_size + work.original_count;
@@ -504,24 +501,24 @@ const Decoder = struct {
 
         work.shards.zero(original_end, work.shards.data.len);
 
-        d.ifft(0, work.shards.shard_length, original_end, 0);
+        d.ifft(0, work.shards.data.len, original_end, 0);
 
         // formal derivative
         for (1..work.shards.data.len) |i| {
             // intCast is safe because i cannot be 0 nor usize max
             const width: u64 = @as(u64, 1) << @intCast(@ctz(i));
-            const s0 = work.shards.data[(i - width) * work.shards.shard_length ..][0..work.shards.shard_length];
-            const s1 = work.shards.data[i * work.shards.shard_length ..][0..work.shards.shard_length];
+            const s0 = work.shards.data[(i - width) * work.shards.shard_length ..][0..width];
+            const s1 = work.shards.data[i * work.shards.shard_length ..][0..width];
             Engine.xor(s0, s1);
         }
 
-        d.fft(0, work.shards.shard_length, original_end, 0);
+        d.fft(0, work.shards.data.len, original_end, 0);
 
         // reveal erasures
 
         for (chunk_size..original_end) |i| {
             if (work.received[i])
-                Engine.mul(work.shards.data[i * work.shards.shard_length ..][0..work.shards.shard_length], work.erasures[i]);
+                Engine.mul(work.shards.data[i * work.shards.shard_length ..][0..work.shards.shard_length], gf.modulus - work.erasures[i]);
         }
 
         // undo last chunk encoding
@@ -670,8 +667,8 @@ const Decoder = struct {
             const log_m = tables.skew[distance + skew_delta - 1];
 
             if (log_m == gf.modulus) {
-                const s0 = shards.data[(pos + distance) * shards.shard_length ..][0..shards.shard_length];
-                const s1 = shards.data[pos * shards.shard_length ..][0..shards.shard_length];
+                const s0 = shards.data[(pos + distance) * shards.shard_length ..][0..distance];
+                const s1 = shards.data[pos * shards.shard_length ..][0..distance];
                 Engine.xor(s0, s1);
             } else {
                 for (0..distance) |i| {
@@ -912,7 +909,7 @@ test "decode" {
     var input: [SHARD_BYTES * count]u8 = undefined;
     for (0..input.len) |i| input[i] = @intCast(i % 256);
 
-    var original: [count]?[]u8 = undefined;
+    var original: [count][]const u8 = undefined;
 
     for (&original, 0..) |*shard, i| {
         const start = i * SHARD_BYTES;
@@ -920,13 +917,17 @@ test "decode" {
         shard.* = input[start..end];
     }
 
+    var empty: [count]?[]u8 = @splat(null);
+
     const recovery: [16]?[64]u8 = .{ .{ 134, 135, 132, 133, 130, 131, 128, 129, 142, 143, 140, 141, 138, 139, 136, 137, 150, 151, 148, 149, 146, 147, 144, 145, 158, 159, 156, 157, 154, 155, 152, 153, 2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13, 18, 19, 16, 17, 22, 23, 20, 21, 26, 27, 24, 25, 30, 31, 28, 29 }, .{ 198, 199, 196, 197, 194, 195, 192, 193, 206, 207, 204, 205, 202, 203, 200, 201, 214, 215, 212, 213, 210, 211, 208, 209, 222, 223, 220, 221, 218, 219, 216, 217, 66, 67, 64, 65, 70, 71, 68, 69, 74, 75, 72, 73, 78, 79, 76, 77, 82, 83, 80, 81, 86, 87, 84, 85, 90, 91, 88, 89, 94, 95, 92, 93 }, .{ 6, 7, 4, 5, 2, 3, 0, 1, 14, 15, 12, 13, 10, 11, 8, 9, 22, 23, 20, 21, 18, 19, 16, 17, 30, 31, 28, 29, 26, 27, 24, 25, 130, 131, 128, 129, 134, 135, 132, 133, 138, 139, 136, 137, 142, 143, 140, 141, 146, 147, 144, 145, 150, 151, 148, 149, 154, 155, 152, 153, 158, 159, 156, 157 }, .{ 70, 71, 68, 69, 66, 67, 64, 65, 78, 79, 76, 77, 74, 75, 72, 73, 86, 87, 84, 85, 82, 83, 80, 81, 94, 95, 92, 93, 90, 91, 88, 89, 194, 195, 192, 193, 198, 199, 196, 197, 202, 203, 200, 201, 206, 207, 204, 205, 210, 211, 208, 209, 214, 215, 212, 213, 218, 219, 216, 217, 222, 223, 220, 221 }, .{ 134, 135, 132, 133, 130, 131, 128, 129, 142, 143, 140, 141, 138, 139, 136, 137, 150, 151, 148, 149, 146, 147, 144, 145, 158, 159, 156, 157, 154, 155, 152, 153, 2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13, 18, 19, 16, 17, 22, 23, 20, 21, 26, 27, 24, 25, 30, 31, 28, 29 }, .{ 198, 199, 196, 197, 194, 195, 192, 193, 206, 207, 204, 205, 202, 203, 200, 201, 214, 215, 212, 213, 210, 211, 208, 209, 222, 223, 220, 221, 218, 219, 216, 217, 66, 67, 64, 65, 70, 71, 68, 69, 74, 75, 72, 73, 78, 79, 76, 77, 82, 83, 80, 81, 86, 87, 84, 85, 90, 91, 88, 89, 94, 95, 92, 93 }, .{ 6, 7, 4, 5, 2, 3, 0, 1, 14, 15, 12, 13, 10, 11, 8, 9, 22, 23, 20, 21, 18, 19, 16, 17, 30, 31, 28, 29, 26, 27, 24, 25, 130, 131, 128, 129, 134, 135, 132, 133, 138, 139, 136, 137, 142, 143, 140, 141, 146, 147, 144, 145, 150, 151, 148, 149, 154, 155, 152, 153, 158, 159, 156, 157 }, .{ 70, 71, 68, 69, 66, 67, 64, 65, 78, 79, 76, 77, 74, 75, 72, 73, 86, 87, 84, 85, 82, 83, 80, 81, 94, 95, 92, 93, 90, 91, 88, 89, 194, 195, 192, 193, 198, 199, 196, 197, 202, 203, 200, 201, 206, 207, 204, 205, 210, 211, 208, 209, 214, 215, 212, 213, 218, 219, 216, 217, 222, 223, 220, 221 }, .{ 134, 135, 132, 133, 130, 131, 128, 129, 142, 143, 140, 141, 138, 139, 136, 137, 150, 151, 148, 149, 146, 147, 144, 145, 158, 159, 156, 157, 154, 155, 152, 153, 2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13, 18, 19, 16, 17, 22, 23, 20, 21, 26, 27, 24, 25, 30, 31, 28, 29 }, .{ 198, 199, 196, 197, 194, 195, 192, 193, 206, 207, 204, 205, 202, 203, 200, 201, 214, 215, 212, 213, 210, 211, 208, 209, 222, 223, 220, 221, 218, 219, 216, 217, 66, 67, 64, 65, 70, 71, 68, 69, 74, 75, 72, 73, 78, 79, 76, 77, 82, 83, 80, 81, 86, 87, 84, 85, 90, 91, 88, 89, 94, 95, 92, 93 }, .{ 6, 7, 4, 5, 2, 3, 0, 1, 14, 15, 12, 13, 10, 11, 8, 9, 22, 23, 20, 21, 18, 19, 16, 17, 30, 31, 28, 29, 26, 27, 24, 25, 130, 131, 128, 129, 134, 135, 132, 133, 138, 139, 136, 137, 142, 143, 140, 141, 146, 147, 144, 145, 150, 151, 148, 149, 154, 155, 152, 153, 158, 159, 156, 157 }, .{ 70, 71, 68, 69, 66, 67, 64, 65, 78, 79, 76, 77, 74, 75, 72, 73, 86, 87, 84, 85, 82, 83, 80, 81, 94, 95, 92, 93, 90, 91, 88, 89, 194, 195, 192, 193, 198, 199, 196, 197, 202, 203, 200, 201, 206, 207, 204, 205, 210, 211, 208, 209, 214, 215, 212, 213, 218, 219, 216, 217, 222, 223, 220, 221 }, .{ 134, 135, 132, 133, 130, 131, 128, 129, 142, 143, 140, 141, 138, 139, 136, 137, 150, 151, 148, 149, 146, 147, 144, 145, 158, 159, 156, 157, 154, 155, 152, 153, 2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13, 18, 19, 16, 17, 22, 23, 20, 21, 26, 27, 24, 25, 30, 31, 28, 29 }, .{ 198, 199, 196, 197, 194, 195, 192, 193, 206, 207, 204, 205, 202, 203, 200, 201, 214, 215, 212, 213, 210, 211, 208, 209, 222, 223, 220, 221, 218, 219, 216, 217, 66, 67, 64, 65, 70, 71, 68, 69, 74, 75, 72, 73, 78, 79, 76, 77, 82, 83, 80, 81, 86, 87, 84, 85, 90, 91, 88, 89, 94, 95, 92, 93 }, .{ 6, 7, 4, 5, 2, 3, 0, 1, 14, 15, 12, 13, 10, 11, 8, 9, 22, 23, 20, 21, 18, 19, 16, 17, 30, 31, 28, 29, 26, 27, 24, 25, 130, 131, 128, 129, 134, 135, 132, 133, 138, 139, 136, 137, 142, 143, 140, 141, 146, 147, 144, 145, 150, 151, 148, 149, 154, 155, 152, 153, 158, 159, 156, 157 }, .{ 70, 71, 68, 69, 66, 67, 64, 65, 78, 79, 76, 77, 74, 75, 72, 73, 86, 87, 84, 85, 82, 83, 80, 81, 94, 95, 92, 93, 90, 91, 88, 89, 194, 195, 192, 193, 198, 199, 196, 197, 202, 203, 200, 201, 206, 207, 204, 205, 210, 211, 208, 209, 214, 215, 212, 213, 218, 219, 216, 217, 222, 223, 220, 221 } };
 
-    const res = try decode(std.testing.allocator, count, count, &original, &recovery);
-    std.testing.allocator.free(res);
+    const res, const start = try decode(std.testing.allocator, count, count, &empty, &recovery);
+    defer std.testing.allocator.free(res);
 
-    for (original, res) |o, r| {
-        try std.testing.expectEqual(o.?, &r);
+    for (0..count) |i| {
+        for (0..SHARD_BYTES) |j| {
+            try std.testing.expectEqual(original[i][j], res[start..][i][j]);
+        }
     }
 }
 
