@@ -883,6 +883,48 @@ fn useHighRate(original: u64, recovery: u64) !bool {
 
 const testing = std.testing;
 
+test "encode and decode" {
+    const count = 16;
+    const SHARD_BYTES = 64;
+
+    var input: [SHARD_BYTES * count]u8 = undefined;
+    for (0..input.len) |i| input[i] = @intCast(i % 256);
+
+    var original: [count][]const u8 = undefined;
+
+    for (&original, 0..) |*shard, i| {
+        const start = i * SHARD_BYTES;
+        const end = start + SHARD_BYTES;
+        shard.* = input[start..end];
+    }
+
+    const recovery = try encode(std.testing.allocator, count, count, &original);
+    defer std.testing.allocator.free(recovery);
+
+    var empty: [count]?[]const u8 = @splat(null);
+
+    var recovery_shards: [count]?[SHARD_BYTES]u8 = undefined;
+
+    for (0..count) |i| {
+        recovery_shards[i] = recovery[i];
+    }
+
+    const recovered, const start = try decode(
+        std.testing.allocator,
+        count,
+        count,
+        &empty,
+        &recovery_shards,
+    );
+    defer std.testing.allocator.free(recovered);
+
+    for (0..count) |i| {
+        for (0..SHARD_BYTES) |j| {
+            try std.testing.expectEqual(original[i][j], recovered[start..][i][j]);
+        }
+    }
+}
+
 test "encode" {
     const count = 16;
     const SHARD_BYTES = 64;
