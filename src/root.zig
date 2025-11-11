@@ -950,7 +950,37 @@ test "encode" {
     }
 }
 
-test "decode" {
+test "decode with 0 recovery shards" {
+    const count = 16;
+    const SHARD_BYTES = 64;
+
+    var input: [SHARD_BYTES * count]u8 = undefined;
+    for (0..input.len) |i| input[i] = @intCast(i % 256);
+
+    var original: [count][]const u8 = undefined;
+
+    for (&original, 0..) |*shard, i| {
+        const start = i * SHARD_BYTES;
+        const end = start + SHARD_BYTES;
+        shard.* = input[start..end];
+    }
+
+    var original_shards: [count]?[]const u8 = undefined;
+    for (0..original_shards.len) |i| original_shards[i] = original[i];
+
+    const recovery: [16]?[64]u8 = @splat(null);
+
+    const res, const start = try decode(testing.allocator, count, count, &original_shards, &recovery);
+    defer testing.allocator.free(res);
+
+    for (0..count) |i| {
+        for (0..SHARD_BYTES) |j| {
+            try testing.expectEqual(original[i][j], res[start..][i][j]);
+        }
+    }
+}
+
+test "decode with 0 original shards" {
     const count = 16;
     const SHARD_BYTES = 64;
 
