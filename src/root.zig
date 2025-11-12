@@ -811,7 +811,7 @@ fn encodeDecodeCycle(
     }
 }
 
-test "encode and decode cycles with all possible valid shard combinations" {
+test "encode and decode cycles with all possible shard combinations" {
     const count = 4;
     const SHARD_BYTES = 64;
 
@@ -824,8 +824,6 @@ test "encode and decode cycles with all possible valid shard combinations" {
     const total_combinations = 1 << (count * 2);
 
     for (0..total_combinations) |mask| {
-        if (@popCount(mask) > count) continue;
-
         original_shards_missing = @splat(true);
         recovery_shards_missing = @splat(true);
 
@@ -839,7 +837,10 @@ test "encode and decode cycles with all possible valid shard combinations" {
             }
         }
 
-        try encodeDecodeCycle(count, SHARD_BYTES, input, original_shards_missing, recovery_shards_missing, AVX2Engine);
+        if (@popCount(mask) <= count)
+            try encodeDecodeCycle(count, SHARD_BYTES, input, original_shards_missing, recovery_shards_missing, AVX2Engine)
+        else
+            try testing.expectError(error.NotEnoughShards, encodeDecodeCycle(count, SHARD_BYTES, input, original_shards_missing, recovery_shards_missing, AVX2Engine));
     }
 }
 
