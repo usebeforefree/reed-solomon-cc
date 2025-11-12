@@ -235,7 +235,6 @@ const Decoder = struct {
             w.shards.deinit(allocator);
         }
 
-        // TODO interface
         fn undoLastChunkEncoding(w: *Work, start: usize, end: usize) void {
             const whole_chunk_count = w.shard_bytes / 64;
             const tail_len = w.shard_bytes % 64;
@@ -654,7 +653,6 @@ const Engine = struct {
         return res;
     }
 
-    // TODO Engine interface
     fn mul(x: [][64]u8, log_m: u16) void {
         const lut = tables.mul_128[log_m];
 
