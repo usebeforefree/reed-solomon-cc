@@ -7,7 +7,12 @@ const walsh_hadamard = @import("walsh_hadamard.zig");
 
 const V = @Vector(32, u8);
 
-fn encode(allocator: std.mem.Allocator, original_count: u64, recovery_count: u64, original: []const []const u8) ![]const [64]u8 {
+fn encode(
+    allocator: std.mem.Allocator,
+    original_count: u64,
+    recovery_count: u64,
+    original: []const []const u8,
+) ![]const [64]u8 {
     if (original.len == 0) return error.TooFewOriginalShards;
     const shard_bytes = original[0].len;
 
@@ -103,14 +108,14 @@ const Encoder = struct {
         // first chunk
         const first_count = @min(work.original_count, chunk_size);
         shards.zero(first_count, chunk_size);
-        e.ifft(0, chunk_size, first_count, chunk_size);
+        Engine.ifft(work, 0, chunk_size, first_count, chunk_size);
 
         if (work.original_count > chunk_size) {
             // full chunks
 
             var chunk_start = chunk_size;
             while (chunk_start + chunk_size < work.original_count) : (chunk_start += chunk_size) {
-                e.ifft(chunk_start, chunk_size, chunk_size, chunk_start + chunk_size);
+                Engine.ifft(work, chunk_start, chunk_size, chunk_size, chunk_start + chunk_size);
                 const s0 = shards.data[0..chunk_size];
                 const s1 = shards.data[chunk_start * shards.shard_length ..][0..chunk_size];
                 Engine.xor(s0, s1);
@@ -121,7 +126,7 @@ const Encoder = struct {
             const last_count = work.original_count % chunk_size;
             if (last_count > 0) {
                 shards.zero(chunk_start + last_count, shards.data.len);
-                e.ifft(chunk_start, chunk_size, last_count, chunk_start + chunk_size);
+                Engine.ifft(work, chunk_start, chunk_size, last_count, chunk_start + chunk_size);
                 const s0 = shards.data[0..chunk_size];
                 const s1 = shards.data[chunk_start * shards.shard_length ..][0..chunk_size];
                 Engine.xor(s0, s1);
@@ -130,149 +135,13 @@ const Encoder = struct {
 
         // fft
 
-        e.fft(0, chunk_size, work.recovery_count, 0);
+        Engine.fft(work, 0, chunk_size, work.recovery_count, 0);
 
         // undo last chunks encoding
 
         work.undoLastChunkEncoding(0, work.recovery_count);
 
         return shards.data;
-    }
-
-    fn fft(e: *Encoder, pos: u64, size: u64, truncated_size: u64, skew_delta: u64) void {
-        const work = &e.work;
-        const shards = &work.shards;
-
-        var distance = size >> 2;
-        var distance_4 = size;
-        while (distance != 0) {
-            var r: u64 = 0;
-            while (r < truncated_size) : (r += distance_4) {
-                const base = r + distance + skew_delta - 1;
-
-                const log_m01 = tables.skew[base + distance * 0];
-                const log_m02 = tables.skew[base + distance * 1];
-                const log_m23 = tables.skew[base + distance * 2];
-
-                for (r..r + distance) |i| {
-                    const position = pos + i;
-
-                    const s0 = shards.data[(position + distance * 0) * shards.shard_length ..][0..shards.shard_length];
-                    const s1 = shards.data[(position + distance * 1) * shards.shard_length ..][0..shards.shard_length];
-                    const s2 = shards.data[(position + distance * 2) * shards.shard_length ..][0..shards.shard_length];
-                    const s3 = shards.data[(position + distance * 3) * shards.shard_length ..][0..shards.shard_length];
-
-                    // first layer
-                    if (log_m02 == gf.modulus) {
-                        Engine.xor(s2, s0);
-                        Engine.xor(s3, s1);
-                    } else {
-                        Engine.fftPartial(s0, s2, log_m02);
-                        Engine.fftPartial(s1, s3, log_m02);
-                    }
-
-                    // second layer
-                    if (log_m01 == gf.modulus) {
-                        Engine.xor(s1, s0);
-                    } else {
-                        Engine.fftPartial(s0, s1, log_m01);
-                    }
-
-                    if (log_m23 == gf.modulus) {
-                        Engine.xor(s3, s2);
-                    } else {
-                        Engine.fftPartial(s2, s3, log_m23);
-                    }
-                }
-            }
-            distance_4 = distance;
-            distance >>= 2;
-        }
-
-        if (distance_4 == 2) {
-            var r: usize = 0;
-            while (r < truncated_size) : (r += 2) {
-                const log_m = tables.skew[r + skew_delta];
-                const s0 = shards.data[(pos + r) * shards.shard_length ..][0..shards.shard_length];
-                const s1 = shards.data[(pos + r + 1) * shards.shard_length ..][0..shards.shard_length];
-
-                if (log_m == gf.modulus) {
-                    Engine.xor(s1, s0);
-                } else {
-                    Engine.fftPartial(s0, s1, log_m);
-                }
-            }
-        }
-    }
-
-    fn ifft(e: *Encoder, pos: u64, size: u64, truncated_size: u64, skew_delta: u64) void {
-        const work = &e.work;
-        const shards = &work.shards;
-
-        var distance: u64 = 1;
-        var distance_4: u64 = 4;
-        while (distance_4 <= size) {
-            var r: u64 = 0;
-            while (r < truncated_size) : (r += distance_4) {
-                const base = r + distance + skew_delta - 1;
-
-                const log_m01 = tables.skew[base + distance * 0];
-                const log_m02 = tables.skew[base + distance * 1];
-                const log_m23 = tables.skew[base + distance * 2];
-
-                for (r..r + distance) |i| {
-                    const position = pos + i;
-
-                    const s0 = shards.data[(position + distance * 0) * shards.shard_length ..][0..shards.shard_length];
-                    const s1 = shards.data[(position + distance * 1) * shards.shard_length ..][0..shards.shard_length];
-                    const s2 = shards.data[(position + distance * 2) * shards.shard_length ..][0..shards.shard_length];
-                    const s3 = shards.data[(position + distance * 3) * shards.shard_length ..][0..shards.shard_length];
-
-                    // first layer
-                    if (log_m01 == gf.modulus) {
-                        Engine.xor(s1, s0);
-                    } else {
-                        Engine.ifftPartial(s0, s1, log_m01);
-                    }
-
-                    if (log_m23 == gf.modulus) {
-                        Engine.xor(s3, s2);
-                    } else {
-                        Engine.ifftPartial(s2, s3, log_m23);
-                    }
-
-                    // second layer
-                    if (log_m02 == gf.modulus) {
-                        Engine.xor(s2, s0);
-                        Engine.xor(s3, s1);
-                    } else {
-                        Engine.ifftPartial(s0, s2, log_m02);
-                        Engine.ifftPartial(s1, s3, log_m02);
-                    }
-                }
-            }
-            distance = distance_4;
-            distance_4 <<= 2;
-        }
-
-        // FINAL ODD LAYER
-
-        if (distance < size) {
-            const log_m = tables.skew[distance + skew_delta - 1];
-
-            if (log_m == gf.modulus) {
-                const s0 = shards.data[(pos + distance) * shards.shard_length ..][0..distance];
-                const s1 = shards.data[pos * shards.shard_length ..][0..distance];
-                Engine.xor(s0, s1);
-            } else {
-                for (0..distance) |i| {
-                    // TODO simplify this slicing
-                    const s0 = shards.data[0 .. (pos + distance) * shards.shard_length][(pos + i) * shards.shard_length ..][0..shards.shard_length];
-                    const s1 = shards.data[(pos + distance) * shards.shard_length ..][i * shards.shard_length ..][0..shards.shard_length];
-                    Engine.ifftPartial(s0, s1, log_m);
-                }
-            }
-        }
     }
 };
 
@@ -505,7 +374,7 @@ const Decoder = struct {
 
         shards.zero(original_end, shards.data.len);
 
-        d.ifft(0, shards.data.len, original_end, 0);
+        Engine.ifft(work, 0, shards.data.len, original_end, 0);
 
         // formal derivative
         for (1..shards.data.len) |i| {
@@ -516,7 +385,7 @@ const Decoder = struct {
             Engine.xor(s0, s1);
         }
 
-        d.fft(0, shards.data.len, original_end, 0);
+        Engine.fft(work, 0, shards.data.len, original_end, 0);
 
         // reveal erasures
 
@@ -544,11 +413,10 @@ const Decoder = struct {
 
         walsh_hadamard.fwht(&work.erasures, gf.order);
     }
+};
 
-    // Same as Encoder fft, should be a seperate method for the Engine interface
-    // TODO Engine interface
-    fn fft(e: *Decoder, pos: u64, size: u64, truncated_size: u64, skew_delta: u64) void {
-        const work = &e.work;
+const Engine = struct {
+    fn fft(work: anytype, pos: u64, size: u64, truncated_size: u64, skew_delta: u64) void {
         const shards = &work.shards;
 
         var distance = size >> 2;
@@ -613,10 +481,7 @@ const Decoder = struct {
         }
     }
 
-    // Same as Encoder fft, should be a seperate method for the Engine interface
-    // TODO Engine interface
-    fn ifft(e: *Decoder, pos: u64, size: u64, truncated_size: u64, skew_delta: u64) void {
-        const work = &e.work;
+    fn ifft(work: anytype, pos: u64, size: u64, truncated_size: u64, skew_delta: u64) void {
         const shards = &work.shards;
 
         var distance: u64 = 1;
@@ -684,9 +549,7 @@ const Decoder = struct {
             }
         }
     }
-};
 
-const Engine = struct {
     fn fftPartial(x: [][64]u8, y: [][64]u8, log_m: u16) void {
         const lut = tables.mul_128[log_m];
 
