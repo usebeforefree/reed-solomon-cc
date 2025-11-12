@@ -282,7 +282,7 @@ fn decode(
     recovery_count: u64,
     original: []const ?[]const u8,
     recovery: []const ?[64]u8,
-) !struct { []const [64]u8, usize } {
+) ![]const [64]u8 {
     const shard_bytes = blk: {
         for (recovery) |rec| {
             if (rec) |r| {
@@ -298,27 +298,22 @@ fn decode(
 
         // original data is complete
         if (original_received_count == original_count) {
-            const chunk_size = try std.math.ceilPowerOfTwo(u64, recovery_count);
-            const work_count = std.mem.alignForward(u64, original_count, chunk_size);
-
-            var shards: Shards = try .init(
-                allocator,
-                work_count,
-                try std.math.divCeil(u64, original[0].?.len, 64),
-            );
+            const result = try allocator.alloc([64]u8, original_count);
+            errdefer allocator.free(result);
 
             for (0..original_count) |i| {
-                shards.insert(i, original[i].?);
+                if (original[i]) |o|
+                    @memcpy(&result[i], o)
+                else
+                    unreachable;
             }
 
-            return .{ shards.data, 0 };
+            return result;
         } else return error.NotEnoughShards;
     };
 
     var decoder: Decoder = try .init(allocator, original_count, recovery_count, shard_bytes);
-    // Does this smell?
     defer decoder.deinit(allocator);
-    errdefer decoder.err_deinit(allocator);
 
     for (0..original_count) |i| {
         if (original[i]) |o| {
@@ -332,7 +327,19 @@ fn decode(
         }
     }
 
-    return .{ try decoder.decode(), decoder.work.original_base_pos };
+    const data = try decoder.decode();
+
+    const result = try allocator.alloc([64]u8, original_count);
+    errdefer allocator.free(result);
+
+    for (0..original_count) |i| {
+        if (original[i]) |o|
+            @memcpy(&result[i], o)
+        else
+            @memcpy(&result[i], &data[decoder.work.original_base_pos + i]);
+    }
+
+    return result;
 }
 
 const Decoder = struct {
@@ -354,12 +361,9 @@ const Decoder = struct {
         received: []bool,
         shards: Shards,
 
-        fn err_deinit(w: *Work, allocator: std.mem.Allocator) void {
-            w.shards.deinit(allocator);
-        }
-
         fn deinit(w: *Work, allocator: std.mem.Allocator) void {
             allocator.free(w.received);
+            w.shards.deinit(allocator);
         }
 
         // TODO interface
@@ -416,10 +420,6 @@ const Decoder = struct {
         }
     }
 
-    fn err_deinit(d: *Decoder, allocator: std.mem.Allocator) void {
-        d.work.err_deinit(allocator);
-    }
-
     fn deinit(d: *Decoder, allocator: std.mem.Allocator) void {
         d.work.deinit(allocator);
     }
@@ -459,7 +459,7 @@ const Decoder = struct {
         work.received[pos] = true;
     }
 
-    fn decode(d: *Decoder) ![]const [64]u8 {
+    fn decode(d: *Decoder) ![][64]u8 {
         const work = &d.work;
         const shards = &d.work.shards;
 
@@ -912,7 +912,7 @@ test "encode and decode" {
         recovery_shards[i] = recovery[i];
     }
 
-    const recovered, const start = try decode(
+    const recovered = try decode(
         std.testing.allocator,
         count,
         count,
@@ -923,7 +923,7 @@ test "encode and decode" {
 
     for (0..count) |i| {
         for (0..SHARD_BYTES) |j| {
-            try std.testing.expectEqual(original[i][j], recovered[start..][i][j]);
+            try std.testing.expectEqual(original[i][j], recovered[i][j]);
         }
     }
 }
@@ -983,14 +983,13 @@ test "decode with multiple original or recovery shards missing" {
         recovery[(c + 1) % count] = null;
         recovery[(r + 1) % count] = null;
 
-        const res, const start = try decode(testing.allocator, count, count, &original_shards, &recovery);
+        const res = try decode(testing.allocator, count, count, &original_shards, &recovery);
         defer testing.allocator.free(res);
 
-        for (0..SHARD_BYTES) |i| {
-            try testing.expectEqual(original[c][i], res[start..][c][i]);
-            try testing.expectEqual(original[r][i], res[start..][r][i]);
-            try testing.expectEqual(original[(c + 1) % count][i], res[start..][(c + 1) % count][i]);
-            try testing.expectEqual(original[(c + 1) % count][i], res[start..][(c + 1) % count][i]);
+        for (0..count) |i| {
+            for (0..SHARD_BYTES) |j| {
+                try testing.expectEqual(original[i][j], res[i][j]);
+            }
         }
     };
 }
@@ -1015,12 +1014,12 @@ test "decode with 0 recovery shards" {
 
     const recovery: [16]?[64]u8 = @splat(null);
 
-    const res, const start = try decode(testing.allocator, count, count, &original_shards, &recovery);
+    const res = try decode(testing.allocator, count, count, &original_shards, &recovery);
     defer testing.allocator.free(res);
 
     for (0..count) |i| {
         for (0..SHARD_BYTES) |j| {
-            try testing.expectEqual(original[i][j], res[start..][i][j]);
+            try testing.expectEqual(original[i][j], res[i][j]);
         }
     }
 }
@@ -1044,12 +1043,12 @@ test "decode with 0 original shards" {
 
     const recovery: [16]?[64]u8 = .{ .{ 134, 135, 132, 133, 130, 131, 128, 129, 142, 143, 140, 141, 138, 139, 136, 137, 150, 151, 148, 149, 146, 147, 144, 145, 158, 159, 156, 157, 154, 155, 152, 153, 2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13, 18, 19, 16, 17, 22, 23, 20, 21, 26, 27, 24, 25, 30, 31, 28, 29 }, .{ 198, 199, 196, 197, 194, 195, 192, 193, 206, 207, 204, 205, 202, 203, 200, 201, 214, 215, 212, 213, 210, 211, 208, 209, 222, 223, 220, 221, 218, 219, 216, 217, 66, 67, 64, 65, 70, 71, 68, 69, 74, 75, 72, 73, 78, 79, 76, 77, 82, 83, 80, 81, 86, 87, 84, 85, 90, 91, 88, 89, 94, 95, 92, 93 }, .{ 6, 7, 4, 5, 2, 3, 0, 1, 14, 15, 12, 13, 10, 11, 8, 9, 22, 23, 20, 21, 18, 19, 16, 17, 30, 31, 28, 29, 26, 27, 24, 25, 130, 131, 128, 129, 134, 135, 132, 133, 138, 139, 136, 137, 142, 143, 140, 141, 146, 147, 144, 145, 150, 151, 148, 149, 154, 155, 152, 153, 158, 159, 156, 157 }, .{ 70, 71, 68, 69, 66, 67, 64, 65, 78, 79, 76, 77, 74, 75, 72, 73, 86, 87, 84, 85, 82, 83, 80, 81, 94, 95, 92, 93, 90, 91, 88, 89, 194, 195, 192, 193, 198, 199, 196, 197, 202, 203, 200, 201, 206, 207, 204, 205, 210, 211, 208, 209, 214, 215, 212, 213, 218, 219, 216, 217, 222, 223, 220, 221 }, .{ 134, 135, 132, 133, 130, 131, 128, 129, 142, 143, 140, 141, 138, 139, 136, 137, 150, 151, 148, 149, 146, 147, 144, 145, 158, 159, 156, 157, 154, 155, 152, 153, 2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13, 18, 19, 16, 17, 22, 23, 20, 21, 26, 27, 24, 25, 30, 31, 28, 29 }, .{ 198, 199, 196, 197, 194, 195, 192, 193, 206, 207, 204, 205, 202, 203, 200, 201, 214, 215, 212, 213, 210, 211, 208, 209, 222, 223, 220, 221, 218, 219, 216, 217, 66, 67, 64, 65, 70, 71, 68, 69, 74, 75, 72, 73, 78, 79, 76, 77, 82, 83, 80, 81, 86, 87, 84, 85, 90, 91, 88, 89, 94, 95, 92, 93 }, .{ 6, 7, 4, 5, 2, 3, 0, 1, 14, 15, 12, 13, 10, 11, 8, 9, 22, 23, 20, 21, 18, 19, 16, 17, 30, 31, 28, 29, 26, 27, 24, 25, 130, 131, 128, 129, 134, 135, 132, 133, 138, 139, 136, 137, 142, 143, 140, 141, 146, 147, 144, 145, 150, 151, 148, 149, 154, 155, 152, 153, 158, 159, 156, 157 }, .{ 70, 71, 68, 69, 66, 67, 64, 65, 78, 79, 76, 77, 74, 75, 72, 73, 86, 87, 84, 85, 82, 83, 80, 81, 94, 95, 92, 93, 90, 91, 88, 89, 194, 195, 192, 193, 198, 199, 196, 197, 202, 203, 200, 201, 206, 207, 204, 205, 210, 211, 208, 209, 214, 215, 212, 213, 218, 219, 216, 217, 222, 223, 220, 221 }, .{ 134, 135, 132, 133, 130, 131, 128, 129, 142, 143, 140, 141, 138, 139, 136, 137, 150, 151, 148, 149, 146, 147, 144, 145, 158, 159, 156, 157, 154, 155, 152, 153, 2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13, 18, 19, 16, 17, 22, 23, 20, 21, 26, 27, 24, 25, 30, 31, 28, 29 }, .{ 198, 199, 196, 197, 194, 195, 192, 193, 206, 207, 204, 205, 202, 203, 200, 201, 214, 215, 212, 213, 210, 211, 208, 209, 222, 223, 220, 221, 218, 219, 216, 217, 66, 67, 64, 65, 70, 71, 68, 69, 74, 75, 72, 73, 78, 79, 76, 77, 82, 83, 80, 81, 86, 87, 84, 85, 90, 91, 88, 89, 94, 95, 92, 93 }, .{ 6, 7, 4, 5, 2, 3, 0, 1, 14, 15, 12, 13, 10, 11, 8, 9, 22, 23, 20, 21, 18, 19, 16, 17, 30, 31, 28, 29, 26, 27, 24, 25, 130, 131, 128, 129, 134, 135, 132, 133, 138, 139, 136, 137, 142, 143, 140, 141, 146, 147, 144, 145, 150, 151, 148, 149, 154, 155, 152, 153, 158, 159, 156, 157 }, .{ 70, 71, 68, 69, 66, 67, 64, 65, 78, 79, 76, 77, 74, 75, 72, 73, 86, 87, 84, 85, 82, 83, 80, 81, 94, 95, 92, 93, 90, 91, 88, 89, 194, 195, 192, 193, 198, 199, 196, 197, 202, 203, 200, 201, 206, 207, 204, 205, 210, 211, 208, 209, 214, 215, 212, 213, 218, 219, 216, 217, 222, 223, 220, 221 }, .{ 134, 135, 132, 133, 130, 131, 128, 129, 142, 143, 140, 141, 138, 139, 136, 137, 150, 151, 148, 149, 146, 147, 144, 145, 158, 159, 156, 157, 154, 155, 152, 153, 2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13, 18, 19, 16, 17, 22, 23, 20, 21, 26, 27, 24, 25, 30, 31, 28, 29 }, .{ 198, 199, 196, 197, 194, 195, 192, 193, 206, 207, 204, 205, 202, 203, 200, 201, 214, 215, 212, 213, 210, 211, 208, 209, 222, 223, 220, 221, 218, 219, 216, 217, 66, 67, 64, 65, 70, 71, 68, 69, 74, 75, 72, 73, 78, 79, 76, 77, 82, 83, 80, 81, 86, 87, 84, 85, 90, 91, 88, 89, 94, 95, 92, 93 }, .{ 6, 7, 4, 5, 2, 3, 0, 1, 14, 15, 12, 13, 10, 11, 8, 9, 22, 23, 20, 21, 18, 19, 16, 17, 30, 31, 28, 29, 26, 27, 24, 25, 130, 131, 128, 129, 134, 135, 132, 133, 138, 139, 136, 137, 142, 143, 140, 141, 146, 147, 144, 145, 150, 151, 148, 149, 154, 155, 152, 153, 158, 159, 156, 157 }, .{ 70, 71, 68, 69, 66, 67, 64, 65, 78, 79, 76, 77, 74, 75, 72, 73, 86, 87, 84, 85, 82, 83, 80, 81, 94, 95, 92, 93, 90, 91, 88, 89, 194, 195, 192, 193, 198, 199, 196, 197, 202, 203, 200, 201, 206, 207, 204, 205, 210, 211, 208, 209, 214, 215, 212, 213, 218, 219, 216, 217, 222, 223, 220, 221 } };
 
-    const res, const start = try decode(testing.allocator, count, count, &empty, &recovery);
+    const res = try decode(testing.allocator, count, count, &empty, &recovery);
     defer testing.allocator.free(res);
 
     for (0..count) |i| {
         for (0..SHARD_BYTES) |j| {
-            try testing.expectEqual(original[i][j], res[start..][i][j]);
+            try testing.expectEqual(original[i][j], res[i][j]);
         }
     }
 }
