@@ -83,15 +83,15 @@ pub fn decode(
     return result;
 }
 
-const Encoder = struct {
+pub const Encoder = struct {
     original_count: u64,
     recovery_count: u64,
     shard_bytes: usize,
 
-    original_received_count: u64 = 0,
+    original_received_count: u64,
     shards: Shards,
 
-    fn init(
+    pub fn init(
         allocator: std.mem.Allocator,
         original_count: u64,
         recovery_count: u64,
@@ -114,17 +114,18 @@ const Encoder = struct {
                     work_count,
                     try std.math.divCeil(u64, shard_bytes, 64),
                 ),
+                .original_received_count = 0,
             };
         } else {
             @panic("TODO");
         }
     }
 
-    fn deinit(e: *Encoder, allocator: std.mem.Allocator) void {
+    pub fn deinit(e: *Encoder, allocator: std.mem.Allocator) void {
         e.shards.deinit(allocator);
     }
 
-    fn addOriginalShard(e: *Encoder, original_shard: []const u8) !void {
+    pub fn addOriginalShard(e: *Encoder, original_shard: []const u8) !void {
         if (e.original_received_count == e.original_count) return error.TooManyOriginalShards;
         if (original_shard.len != e.shard_bytes) return error.DifferentShardSize;
 
@@ -132,7 +133,7 @@ const Encoder = struct {
         e.original_received_count += 1;
     }
 
-    fn encode(e: *Encoder) ![]const [64]u8 {
+    pub fn encode(e: *Encoder) ![]const [64]u8 {
         const shards = &e.shards;
 
         if (e.original_received_count != e.original_count) return error.TooFewOriginalShards;
@@ -172,7 +173,7 @@ const Encoder = struct {
     }
 };
 
-const Decoder = struct {
+pub const Decoder = struct {
     original_count: u64,
     recovery_count: u64,
     shard_bytes: usize,

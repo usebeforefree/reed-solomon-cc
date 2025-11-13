@@ -26,6 +26,19 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "tables", .module = tables_mod }},
     });
 
+    const benchmark_step = b.step("benchmark", "Runs the benchmarks");
+    const benchmark_exe = b.addExecutable(.{
+        .name = "benchmarks",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/benchmarks.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "reedsol", .module = reedsol }},
+        }),
+        .use_llvm = use_llvm,
+    });
+    benchmark_step.dependOn(&b.addRunArtifact(benchmark_exe).step);
+
     const test_step = b.step("test", "Run tests");
     inline for (.{
         .{ "encode", "src/tests.zig" },
