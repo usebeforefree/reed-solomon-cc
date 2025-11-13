@@ -201,15 +201,16 @@ const Decoder = struct {
 
             const chunk_size = try std.math.ceilPowerOfTwo(u64, recovery_count);
             const work_count = try std.math.ceilPowerOfTwo(u64, chunk_size + original_count);
+            const shard_bytes_div_ceil = try std.math.divCeil(u64, shard_bytes, 64);
 
             var shards: Shards = try .init(
                 allocator,
                 work_count,
-                try std.math.divCeil(u64, shard_bytes, 64),
+                shard_bytes_div_ceil,
             );
             errdefer shards.deinit(allocator);
 
-            const received = try allocator.alloc(bool, original_count + recovery_count);
+            const received = try allocator.alloc(bool, work_count * shard_bytes_div_ceil);
             errdefer allocator.free(received);
             @memset(received, false);
 
