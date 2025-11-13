@@ -10,8 +10,8 @@ fn encodeDecodeCycle(
     comptime count: usize,
     comptime SHARD_BYTES: usize,
     input: [count * SHARD_BYTES]u8,
-    original_shards_missing: [count]bool,
-    recovery_shards_missing: [count]bool,
+    original_shards_present: [count]bool,
+    recovery_shards_present: [count]bool,
 ) !void {
     var original: [count][]const u8 = undefined;
     for (&original, 0..) |*shard, i| {
@@ -30,7 +30,7 @@ fn encodeDecodeCycle(
 
     var original_recovery_shards: [count]?[]const u8 = undefined;
     for (0..count) |i| {
-        original_recovery_shards[i] = if (original_shards_missing[i])
+        original_recovery_shards[i] = if (original_shards_present[i])
             original[i]
         else
             null;
@@ -38,7 +38,7 @@ fn encodeDecodeCycle(
 
     var recovery_shards: [count]?[SHARD_BYTES]u8 = undefined;
     for (0..count) |i| {
-        recovery_shards[i] = if (recovery_shards_missing[i])
+        recovery_shards[i] = if (recovery_shards_present[i])
             recovery[i]
         else
             null;
@@ -66,21 +66,21 @@ test "encode and decode cycles with all possible shard combinations" {
     var input: [SHARD_BYTES * count]u8 = undefined;
     for (0..input.len) |i| input[i] = @intCast(i % 256);
 
-    var original_shards_missing: [count]bool = undefined;
-    var recovery_shards_missing: [count]bool = undefined;
+    var original_shards_present: [count]bool = undefined;
+    var recovery_shards_present: [count]bool = undefined;
 
     const total_combinations = 1 << (count * 2);
 
     for (0..total_combinations) |mask| {
-        original_shards_missing = @splat(true);
-        recovery_shards_missing = @splat(true);
+        original_shards_present = @splat(true);
+        recovery_shards_present = @splat(true);
 
         for (0..count * 2) |i| {
             if ((mask & (@as(usize, 1) << @as(u6, @intCast(i)))) != 0) {
                 if (i < count) {
-                    original_shards_missing[i] = false;
+                    original_shards_present[i] = false;
                 } else {
-                    recovery_shards_missing[i - count] = false;
+                    recovery_shards_present[i - count] = false;
                 }
             }
         }
@@ -90,8 +90,8 @@ test "encode and decode cycles with all possible shard combinations" {
             count,
             SHARD_BYTES,
             input,
-            original_shards_missing,
-            recovery_shards_missing,
+            original_shards_present,
+            recovery_shards_present,
         );
         if (@popCount(mask) <= count)
             try result
