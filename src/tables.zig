@@ -1,6 +1,6 @@
 const std = @import("std");
 const gf = @import("gf.zig");
-const utils = @import("utils.zig");
+const utils = @import("utilities.zig");
 const walsh_hadamard = @import("walsh_hadamard.zig");
 
 pub fn main() !void {
@@ -42,7 +42,7 @@ pub fn main() !void {
 
     for (0..gf.order) |i| log[i] = exp[log[i]];
     for (0..gf.order) |i| exp[log[i]] = @intCast(i);
-    exp[gf.modulus] = exp[0];
+    exp[gf.modulus] = exp[0]; // intentional, makes addition a tad easier without the extra wrap
 
     for (exp) |e| try stdout.print("{d}, ", .{e});
     try stdout.writeAll(
@@ -76,11 +76,11 @@ pub fn main() !void {
             }
         }
 
-        temp[m] = gf.modulus - log[utils.mul(temp[m], log[temp[m] ^ 1], &exp, &log)];
+        temp[m] = gf.modulus - log[utils.mul16(temp[m], log[temp[m] ^ 1], &exp, &log)];
 
         for (m + 1..15) |i| {
             const sum = utils.addMod(log[temp[i] ^ 1], temp[m]);
-            temp[i] = utils.mul(temp[i], sum, &exp, &log);
+            temp[i] = utils.mul16(temp[i], sum, &exp, &log);
         }
     }
 
@@ -103,7 +103,12 @@ pub fn main() !void {
             var prod_lo: [16]u8 = @splat(0);
             var prod_hi: [16]u8 = @splat(0);
             for (0..16) |j| {
-                const prod = utils.mul(@intCast(j << (@as(u6, @intCast(i)) * 4)), @intCast(log_m), &exp, &log);
+                const prod = utils.mul16(
+                    @intCast(j << (@as(u6, @intCast(i)) * 4)),
+                    @intCast(log_m),
+                    &exp,
+                    &log,
+                );
                 prod_lo[j] = @truncate(prod);
                 prod_hi[j] = @truncate(prod >> 8);
             }
@@ -120,9 +125,7 @@ pub fn main() !void {
             try stdout.writeAll(
                 \\ .{
             );
-
             for (l) |i| try stdout.print(" {d},", .{i});
-
             try stdout.writeAll(
                 \\ },
             );
@@ -131,6 +134,8 @@ pub fn main() !void {
             \\ },
         );
     }
+
+    // engine specific tables
 
     try stdout.writeAll(
         \\ };
@@ -142,7 +147,6 @@ pub fn main() !void {
     walsh_hadamard.fwht(&log_walsh, gf.order);
 
     for (log_walsh) |l| try stdout.print(" {d},", .{l});
-
     try stdout.writeAll(
         \\ };
     );
