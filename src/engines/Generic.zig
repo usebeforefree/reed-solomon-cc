@@ -1,6 +1,7 @@
 //! An engine that implements the fft and ifft using generic `@Vector`s.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const tables = @import("tables");
 
 const walsh_hadamard = @import("../walsh_hadamard.zig");
@@ -146,8 +147,7 @@ pub fn ifft(a: anytype, pos: u64, size: u64, truncated_size: u64, skew_delta: u6
 }
 
 fn fftPartial(x: [][64]u8, y: [][64]u8, log_m: u16) void {
-    const lut = tables.mul_128[log_m];
-
+    const lut: Lut = .init(&tables.mul_128[log_m]);
     for (x, y) |*a, *b| {
         var x_lo: V = @bitCast(a[0..32].*);
         var x_hi: V = @bitCast(a[32..64].*);
@@ -169,7 +169,7 @@ fn fftPartial(x: [][64]u8, y: [][64]u8, log_m: u16) void {
 }
 
 fn ifftPartial(x: [][64]u8, y: [][64]u8, log_m: u16) void {
-    const lut = tables.mul_128[log_m];
+    const lut: Lut = .init(&tables.mul_128[log_m]);
 
     for (x, y) |*a, *b| {
         var x_lo: V = @bitCast(a[0..32].*);
@@ -218,8 +218,7 @@ pub fn evalPoly(erasures: *[gf.order]u16, truncated_size: u64) void {
 ///
 /// Each 64-byte chunk represents 512 bits (or 64 GF(2^8) symbols).
 pub fn mulScalar(x: [][64]u8, log_m: u16) void {
-    const lut = tables.mul_128[log_m];
-
+    const lut: Lut = .init(&tables.mul_128[log_m]);
     for (x) |*chunk| {
         var x_lo: V = @bitCast(chunk[0..32].*);
         var x_hi: V = @bitCast(chunk[32..64].*);
@@ -232,7 +231,7 @@ pub fn mulScalar(x: [][64]u8, log_m: u16) void {
 }
 
 /// Fused multiply-add operation in GF(2^8).
-fn mulAdd(x_lo: V, x_hi: V, y_lo: V, y_hi: V, lut: tables.Lut) struct { V, V } {
+inline fn mulAdd(x_lo: V, x_hi: V, y_lo: V, y_hi: V, lut: Lut) struct { V, V } {
     const prod_lo, const prod_hi = mul(y_lo, y_hi, lut);
     return .{
         x_lo ^ prod_lo,
@@ -240,55 +239,79 @@ fn mulAdd(x_lo: V, x_hi: V, y_lo: V, y_hi: V, lut: tables.Lut) struct { V, V } {
     };
 }
 
-fn mul(lo: V, hi: V, lut: tables.Lut) struct { V, V } {
+const Lut = struct {
+    t0_lo: V,
+    t1_lo: V,
+    t2_lo: V,
+    t3_lo: V,
+    t0_hi: V,
+    t1_hi: V,
+    t2_hi: V,
+    t3_hi: V,
+
+    inline fn init(lut: *const tables.Lut) Lut {
+        return .{
+            .t0_lo = broadcast(lut[0][0]),
+            .t0_hi = broadcast(lut[1][0]),
+
+            .t1_lo = broadcast(lut[0][1]),
+            .t1_hi = broadcast(lut[1][1]),
+
+            .t2_lo = broadcast(lut[0][2]),
+            .t2_hi = broadcast(lut[1][2]),
+
+            .t3_lo = broadcast(lut[0][3]),
+            .t3_hi = broadcast(lut[1][3]),
+        };
+    }
+};
+
+fn broadcast(x: u128) V {
+    const parts: [2]u64 = @bitCast(x);
+    const result = @shuffle(u64, parts, undefined, @Vector(4, i32){ 0, 1, 0, 1 });
+    return @bitCast(result);
+}
+
+inline fn mul(lo: V, hi: V, lut: Lut) struct { V, V } {
     var prod_lo: V = undefined;
     var prod_hi: V = undefined;
 
-    const clr_mask: V = @splat(0x0f);
+    const nibble: V = @splat(0x0f);
 
-    const data_0 = lo & clr_mask;
-    prod_lo = shuffle256epi8(broadcastU128(lut[0][0]), data_0);
-    prod_hi = shuffle256epi8(broadcastU128(lut[1][0]), data_0);
+    const data_0 = lo & nibble;
+    prod_lo = shuffle(lut.t0_lo, data_0);
+    prod_hi = shuffle(lut.t1_hi, data_0);
 
-    const data_1 = (lo >> @splat(4)) & clr_mask;
-    prod_lo ^= shuffle256epi8(broadcastU128(lut[0][1]), data_1);
-    prod_hi ^= shuffle256epi8(broadcastU128(lut[1][1]), data_1);
+    const data_1 = (lo >> @splat(4)) & nibble;
+    prod_lo ^= shuffle(lut.t1_lo, data_1);
+    prod_hi ^= shuffle(lut.t1_hi, data_1);
 
-    const data_2 = hi & clr_mask;
-    prod_lo ^= shuffle256epi8(broadcastU128(lut[0][2]), data_2);
-    prod_hi ^= shuffle256epi8(broadcastU128(lut[1][2]), data_2);
+    const data_2 = hi & nibble;
+    prod_lo ^= shuffle(lut.t2_lo, data_2);
+    prod_hi ^= shuffle(lut.t2_hi, data_2);
 
-    const data_3 = (hi >> @splat(4)) & clr_mask;
-    prod_lo ^= shuffle256epi8(broadcastU128(lut[0][3]), data_3);
-    prod_hi ^= shuffle256epi8(broadcastU128(lut[1][3]), data_3);
+    const data_3 = (hi >> @splat(4)) & nibble;
+    prod_lo ^= shuffle(lut.t3_lo, data_3);
+    prod_hi ^= shuffle(lut.t3_hi, data_3);
 
     return .{ prod_lo, prod_hi };
 }
 
-// TODO optimize
-fn broadcastU128(x: u128) V {
-    const lo: [16]u8 = @bitCast(x);
-    var res: V = undefined;
+extern fn @"llvm.x86.avx2.pshuf.b"(V, V) V;
+inline fn shuffle(a: V, b: V) V {
+    if (builtin.zig_backend == .stage2_llvm and builtin.cpu.arch == .x86_64) {
+        return @"llvm.x86.avx2.pshuf.b"(a, b);
+    } else {
+        var res: V = @splat(0);
+        for (0..16) |i| {
+            if ((b[i] & 0x80) == 0)
+                res[i] = a[b[i] % 16];
 
-    for (0..16) |i| {
-        res[i] = lo[i];
-        res[i + 16] = lo[i];
+            if ((b[i + 16] & 0x80) == 0)
+                res[i + 16] = a[b[i + 16] % 16 + 16];
+        }
+        return res;
     }
-
-    return res;
-}
-
-// TODO optimize
-fn shuffle256epi8(a: V, b: V) V {
-    var res: V = @splat(0);
-    for (0..16) |i| {
-        if ((b[i] & 0x80) == 0)
-            res[i] = a[b[i] % 16];
-
-        if ((b[i + 16] & 0x80) == 0)
-            res[i + 16] = a[b[i + 16] % 16 + 16];
-    }
-    return res;
 }
 
 test ifftPartial {
@@ -366,7 +389,7 @@ test mulAdd {
         @bitCast(@Vector(4, u64){ 2820983053732684064, 3399704436437297448, 3978425819141910832, 4557147201846524216 }),
         @splat(0x80),
         @splat(0x80),
-        tables.mul_128[0x7777],
+        .init(&tables.mul_128[0x7777]),
     );
 
     const expected_prod_lo: V = @bitCast(@Vector(4, u64){ 2025808526283708955, 1447087143579095571, 868365760874482187, 289644378169868803 });
@@ -381,7 +404,7 @@ test mul {
         const prod_lo, const prod_hi = mul(
             @splat(0x80),
             @splat(0x80),
-            tables.mul_128[0x7777],
+            .init(&tables.mul_128[0x7777]),
         );
 
         const expected_prod_lo: V = @splat(0x1B);
@@ -394,7 +417,7 @@ test mul {
         const prod_lo, const prod_hi = mul(
             @splat(0x0E),
             @splat(0xE7),
-            tables.mul_128[0x4444],
+            .init(&tables.mul_128[0x4444]),
         );
 
         const expected_prod_lo: V = @splat(0x9B);
@@ -407,7 +430,7 @@ test mul {
         const prod_lo, const prod_hi = mul(
             @splat(0x80),
             @splat(0x80),
-            tables.mul_128[0xDDDD],
+            .init(&tables.mul_128[0xDDDD]),
         );
 
         const expected_prod_lo: V = @splat(0x15);
@@ -420,7 +443,7 @@ test mul {
         const prod_lo, const prod_hi = mul(
             @splat(0),
             @splat(0),
-            tables.mul_128[0x8888],
+            .init(&tables.mul_128[0x8888]),
         );
 
         const expected_prod_lo: V = @splat(0);
